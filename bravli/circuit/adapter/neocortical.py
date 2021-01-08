@@ -223,8 +223,6 @@ class BlueBrainModelAdapter(WithFields):
                 return etypes
         raise RuntimeError("Execution should not reach here.")
 
-
-
     def get_spatial_volume(self, circuit_model, **spatial_query):
         """
         Get total spatial volume of the circuit space that satisfies a spatial
@@ -298,7 +296,6 @@ class BlueBrainModelAdapter(WithFields):
                                      of_type=ConnectomeType.FUNCTIONAL,
                                      **query,)
                      
-
     def get_afferent_connections(self,circuit_model,
                                  post_synaptic,
                                  with_synapse_ids=False,
@@ -368,7 +365,6 @@ class BlueBrainModelAdapter(WithFields):
                     with_synapse_ids,
                     with_synapse_count,
                     of_type)
-
 
     def get_cells(self, circuit_model,
                   properties=None,
@@ -484,7 +480,6 @@ class BlueBrainModelAdapter(WithFields):
                              for _, pre in pre_synaptic_cell_types.iterrows()
                              for _, post in post_synaptic_cell_types.iterrows()])\
                  .reset_index(drop=True)
-                    
 
     #TODO: remove these functions
     def _get_cell_density_overall(self,
@@ -505,7 +500,6 @@ class BlueBrainModelAdapter(WithFields):
         ).shape[0]
         count_voxels = circuit_model.atlas.count_voxels(**query_spatial)
         return count_cells/(count_voxels*1.e-9*circuit_model.atlas.voxel_volume)
-
 
     def get_orientations(self, model, positions):
         """
