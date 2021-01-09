@@ -1,0 +1,4 @@
+#+TITLE: Initial Human Neocortical Microcircuit
+
+Here we analyze and validate a human neo-cortical microcircuit developed at BBP
+in 2021.

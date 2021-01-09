@@ -8,11 +8,13 @@ import neurom as nm
 from dmt.tk.author import Author
 from dmt.model.interface import interfacemethod
 from dmt.analysis.document.builder import ArticleBuilder
+from bravli.circuit.analysis.configuration import CircuitAnalysisConfiguration
 
 ART = ArticleBuilder(title="Bouton density in a circuit region.",
                      author=Author.zero,
                      __file__=__file__)
 
+CONFIG = CircuitAnalysisConfiguration()
 
 @interfacemethod
 def get_synapses_per_bouton(adapter, model, **cell_query):
@@ -70,17 +72,34 @@ def get_bouton_density(adapter, model, cell, region=None):
     considered that fall in the queried region.
     """
     if not region:
-        synapses = adapter.get_efferent_synapse_count(model, cell)
+        synapses = adapter.count_efferent_synapses(model, cell)
         axon_length = adapter.get_axon_length(model, cell)
     else:
         segments = adapter.get_efferent_synapse_segments(adapter, model, cell, region)
         synapses = segments.shape[0]
         axon_length = np.linalg.norm(segments.end - segments.begin).sum()
 
-    synapses_per_bouton = adapter.get_synapses_per_bouton(adapter, model, region)
+    synapses_per_bouton = adapter.get_synapses_per_bouton( model)
     boutons = synapses / synapses_per_bouton
     return boutons / axon_length
 
+
+@ART.methods
+def get_axon_apposition_density(adapter, model, cell, region=None):
+    """
+    Get number of appositions per unit length of the axon.
+    """
+    if not region:
+        appositions = adapter.count_axon_appositions(model, cell)
+        axon_length = adapter.get_axon_length(model, cell)
+    else:
+        segments = adapter.get_axon_apposition_segments(adapter, model, cell,region)
+        appositions = segments.shape[0]
+        axon_length = np.linalg.norm(segments.end - segments.begin).sum()
+
+    appositions_per_bouton = adapter.get_synapses_per_bouton(model)
+    boutons = appositions / appositions_per_bouton
+    return boutons / axon_length
 
 @ART.sections
 def bio_data(adapter, model):
@@ -90,6 +109,7 @@ def bio_data(adapter, model):
     """
     pass
 
+
 @ART.sections
 def bouton_density(adapter, model):
     """
@@ -97,15 +117,39 @@ def bouton_density(adapter, model):
     """
     pass
 
+
 @ART.sections.bouton_density.measurements
-def get_bouton_density_by_mtype(adapter, model,
-                                sample_size=20,
-                                region=None):
-    """..."""
-    raise NotImplementedError
+def get_bouton_density_by_mtype(adapter, model, config=CONFIG,
+                                **spatial_query):
+    """
+    Arguments
+    --------------
+    """
+    from bravli.circuit.analysis.methods import sample_cells
+    try:
+        mtypes = config.mtypes
+    except AttributeError:
+        mtypes = adapter.get_mtypes(model)
 
+    try:
+        sample_size = config.cell_sample_size
+    except AttributeError:
+        try:
+            sample_size = config.sample_size
+        except AttributeError:
+            sample_size = 20
 
-@ART.sections.bouton_density.illustrations
+    def get(mtype):
+        cells = sample_cells(adapter, model, size_sample=sample_size,
+                             mtype=mtype, **spatial_query)
+        bouton_densities = [get_bouton_density(adapter, model, cell)
+                            for cell in cells.itertuples()]
+        return pd.DataFrame({"mtype": mtype, "bouton_density": bouton_densities})
+                             
+
+    return pd.concat([get(mtype) for mtype in mtypes])
+
+@ART.sections.bouton_density.illustration
 def plot_bouton_density(adapter, model, **kwargs):
     """
     Plot a bars for mtype bouton density ...

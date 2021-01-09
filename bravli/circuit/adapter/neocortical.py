@@ -5,6 +5,7 @@ Adapt BBP's neocortical models.
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
+import neurom as nm
 from dmt.tk.field import Field, lazyfield, WithFields, Record, NA
 from dmt.tk.collections import get_list
 from neuro_dmt.utils.geometry import Cuboid
@@ -17,6 +18,7 @@ Y = terminology.bluebrain.cell.y
 Z = terminology.bluebrain.cell.z
 XYZ = [X, Y, Z]
 
+
 class BlueBrainModelAdapter(WithFields):
     """
     Adapt a circuit / simulation from the Blue Brain Project.
@@ -27,6 +29,11 @@ class BlueBrainModelAdapter(WithFields):
         random position generator. 
         """,
         __default_value__={})
+    model_has_subregions = Field(
+        """
+        Does this brain region model contain sub-regions?
+        """,
+        __default_value__=False)
 
     @staticmethod
     def _resolve_circuit(model):
@@ -91,7 +98,7 @@ class BlueBrainModelAdapter(WithFields):
                 pass
             pass
         return NA
- 
+
     def get_brain_region(self, circuit_model):
         """
         Label for the brain region modeled.
@@ -295,7 +302,7 @@ class BlueBrainModelAdapter(WithFields):
         return self.iter_connections(self, circuit_model,
                                      of_type=ConnectomeType.FUNCTIONAL,
                                      **query,)
-                     
+
     def get_afferent_connections(self,circuit_model,
                                  post_synaptic,
                                  with_synapse_ids=False,
@@ -343,6 +350,63 @@ class BlueBrainModelAdapter(WithFields):
                                 columns=["post_gid"])
         return pd.DataFrame(connections,
                             columns=["pre_gid", "post_gid", "strength"])
+
+    def get_efferent_connection_strengths(self, circuit_model,
+                                          pre_synaptic,
+                                          of_type=ConnectomeType.FUNCTIONAL):
+        """
+        Arguments
+        --------------
+        pre_synaptic :: Either a `pandas.Series` representing a cell
+        ~               or a `pandas.DataFrame` containing cells as rows
+        ~               or a `numpy.array` of cell gids.
+        """
+        return self.get_efferent_connections(circuit_model, pre_synaptic,
+                                             with_synapse_count=True,
+                                             of_type=of_type)
+
+    @staticmethod
+    def _resolve_gid(cell):
+        """..."""
+        try:
+            return cell.gid
+        except AttributeError:
+            pass
+
+        try:
+            return int(cell)
+        except ValueError:
+            pass
+
+        raise ValueError("Could not resolve {}".format(cell))
+
+    def count_efferent_synapses(self, circuit_model, cell):
+        """..."""
+
+        connectome = self.get_connectome(circuit_model,
+                                         of_type=ConnectomeType.FUNCTIONAL)
+        return len(connectome.efferent_synapses(self._resolve_gid(cell)))
+
+    def count_axon_appositions(self, circuit_model, cell):
+        """..."""
+        connectome = self.get_connectome(circuit_model,
+                                         of_type=ConnectomeType.STRUCTURAL)
+        return len(connectome.efferent_synapses(self._resolve_gid(cell)))
+
+    def get_axon_length(self, circuit_model, cell):
+        """..."""
+        morphologies = circuit_model.morphologies
+        return nm.get("neurite_lengths",
+                      morphologies.get(self._resolve_gid(cell), transform=False),
+                      neurite_type=nm.AXON)[0]
+
+    def get_synapses_per_bouton(self, circuit_model):
+        """..."""
+        try:
+            return circuit_model.synapses_per_bouton
+        except AttributeError:
+            pass
+        return 1.0
 
     def get_connections(self, circuit_model,
                         cell_group,
@@ -481,6 +545,7 @@ class BlueBrainModelAdapter(WithFields):
                              for _, post in post_synaptic_cell_types.iterrows()])\
                  .reset_index(drop=True)
 
+
     #TODO: remove these functions
     def _get_cell_density_overall(self,
             circuit_model,
@@ -500,6 +565,7 @@ class BlueBrainModelAdapter(WithFields):
         ).shape[0]
         count_voxels = circuit_model.atlas.count_voxels(**query_spatial)
         return count_cells/(count_voxels*1.e-9*circuit_model.atlas.voxel_volume)
+
 
     def get_orientations(self, model, positions):
         """

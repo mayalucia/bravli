@@ -18,3 +18,4 @@
 """
 Analyses of a brain reconstruction.
 """
+from .model import BlueBrainCircuitModel, BlueBrainCircuitAtlas

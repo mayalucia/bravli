@@ -18,3 +18,7 @@
 """
 Analyses of digitally reconstructed circuit model connectome.
 """
+
+from .bouton_density import (get_bouton_density,
+                             get_axon_apposition_density)
+                             
