@@ -88,6 +88,12 @@ class BlueBrainCircuitModel(WithFields):
         a basic circuit config file is created in the circuit directory.
         """,
         __default_value__="CircuitConfig_base")
+    path_mconfig = Field(
+        """
+        A YAML that contains location of data from measurements made on the
+        circuit.
+        """,
+        __default_value__=NA)
 
     def __init__(self, circuit=None, *args, **kwargs):
         """
@@ -149,7 +155,6 @@ class BlueBrainCircuitModel(WithFields):
         assert isinstance(circuit, BluePyCircuit)
         return circuit
         
-
     @lazyfield
     def atlas(self):
         """
@@ -573,3 +578,16 @@ class BlueBrainCircuitModel(WithFields):
         axis of cells in a voxel.
         """
         return self.atlas.orientation_field
+
+
+
+    @lazyfield
+    def mconfig(self):
+        """..."""
+        if not self.path_mconfig:
+            raise ValueError("Path to measurements config not available.")
+
+        with open(self.path_mconfig, 'r') as fptr:
+            _mconfig = yaml.load(fptr, Loader=yaml.FullLoader)
+
+        return _mconfig

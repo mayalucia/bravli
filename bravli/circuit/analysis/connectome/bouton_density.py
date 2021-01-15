@@ -4,7 +4,6 @@ Analyze bouton density in a circuit.
 
 import numpy as np
 import pandas as pd
-import neurom as nm
 from dmt.tk.author import Author
 from dmt.model.interface import interfacemethod
 from dmt.analysis.document.builder import ArticleBuilder
@@ -155,3 +154,6 @@ def plot_bouton_density(adapter, model, **kwargs):
     Plot a bars for mtype bouton density ...
     """
     raise NotImplementedError
+
+
+

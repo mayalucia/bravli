@@ -18,3 +18,5 @@
 """
 Analysis adapters for digitally reconstructed circuit models.
 """
+
+from ._base import BlueBrainModelAdapter
