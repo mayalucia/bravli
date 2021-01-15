@@ -97,8 +97,19 @@ class BlueBrainCircuitModel(WithFields):
         -------------
         circuit: A BluePy circuit.
         """
-        if circuit is not None:
-            self._bluepy_circuit = circuit
+        if circuit:
+            if isinstance(circuit, BluePyCircuit):
+                bluepy_circuit = circuit
+            else:
+                try:
+                    bluepy_circuit = BluePyCircuit(str(circuit))
+                except IsADirectoryError:
+                    bluepy_circuit = None
+                    kwargs["path_circuit_data"] = circuit
+                else:
+                    bluepy_circuit = bluepy_circuit
+            if bluepy_circuit:
+                self._bluepy_circuit = bluepy_circuit
         super().__init__(*args, **kwargs)
 
     def get_path(self, *relative_path):
