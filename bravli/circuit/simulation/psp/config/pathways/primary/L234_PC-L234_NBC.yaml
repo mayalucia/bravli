@@ -1,0 +1,25 @@
+reference:
+    author: Wang et al. 2002 (not sure of hold_V...), nsysn - Markram et al. 2004
+    psp_amplitude:
+        mean: 2.86
+        std: 1.17
+    synapse_count:
+        mean: 3.4
+        std: 1.5
+
+pathway:
+    pre: L234_PC
+    post: L234_NBC
+    constraints:
+        unique_gids: true
+        min_nsyn: 3
+        max_nsyn: 5
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -74.0
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

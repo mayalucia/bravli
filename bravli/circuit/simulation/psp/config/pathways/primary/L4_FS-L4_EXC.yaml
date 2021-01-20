@@ -1,0 +1,25 @@
+reference:
+    author: "Beierlein et al. 2003 (not so god cell-type classification), nsysn - avg from Markram et al. 2004"
+    psp_amplitude:
+        mean: 1.1
+        std: 0.8
+    synapse_count:
+        mean: 15.15
+        std: 0.65
+
+pathway:
+    pre: L4_FS
+    post: L4_EXC
+    constraints:
+        unique_gids: true
+        min_nsyn: 12
+        max_nsyn: 15
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -70.75
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

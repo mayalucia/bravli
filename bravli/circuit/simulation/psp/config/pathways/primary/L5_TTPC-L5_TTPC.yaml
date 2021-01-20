@@ -1,0 +1,25 @@
+reference:
+    author: "Markram 1997"
+    psp_amplitude:
+        mean: 1.3
+        std: 1.1
+    synapse_count:
+        mean: 5.5
+        std: 1.1
+
+pathway:
+    pre: L5_TTPC
+    post: L5_TTPC
+    constraints:
+        unique_gids: true
+        min_nsyn: 4
+        max_nsyn: 7
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -74.0
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

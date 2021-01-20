@@ -1,0 +1,25 @@
+reference:
+    author: "Le Be 2007"
+    psp_amplitude:
+        mean: 0.8
+        std: 0.2
+    synapse_count:
+        mean: 4.0
+        std: 0.3
+
+pathway:
+    pre: L5A_PC
+    post: L5A_PC
+    constraints:
+        unique_gids: true
+        min_nsyn: 4
+        max_nsyn: 5
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -75.0
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

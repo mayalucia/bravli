@@ -1,0 +1,23 @@
+reference:
+    author: "Angulo 1999"
+    psp_amplitude:
+        mean: 2.1
+        std: 1.3
+    synapse_count:
+        mean: 1.5
+        std: 0.5
+
+pathway:
+    pre: L5_TTPC
+    post: L5_FS #_sel_etypes
+    constraints:
+        unique_gids: true
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -72.0
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

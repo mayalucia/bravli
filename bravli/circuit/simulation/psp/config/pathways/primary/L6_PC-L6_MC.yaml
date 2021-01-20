@@ -1,0 +1,25 @@
+reference:
+    author: Thomas K Berger's thesis (lumped), nsysn - avg from Markram et al. 2004
+    psp_amplitude:
+        mean: 0.2
+        std: 0.12
+    synapse_count:
+        mean: 8.2
+        std: 5
+
+pathway:
+    pre: L6_PC
+    post: L6_MC
+    constraints:
+        unique_gids: true
+        min_nsyn: 4
+        max_nsyn: 7
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -82.5
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

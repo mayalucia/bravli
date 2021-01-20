@@ -1,0 +1,13 @@
+pathway:
+    projection: Thalamocortical_input_VPM
+    pre: null
+    post: L4_EXC
+    constraints:
+        unique_gids: true
+
+protocol:
+    record_dt: 0.1
+    hold_V: -73.4
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

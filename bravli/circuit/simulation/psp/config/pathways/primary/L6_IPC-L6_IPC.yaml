@@ -1,0 +1,20 @@
+reference:
+    author: Thomas K Berger's thesis
+    psp_amplitude:
+        mean: 1.05
+        std: 0.31
+
+pathway:
+    pre: L6_IPC
+    post: L6_IPC
+    constraints:
+        unique_gids: true
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -82.5
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

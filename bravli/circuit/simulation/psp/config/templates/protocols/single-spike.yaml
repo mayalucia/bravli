@@ -1,0 +1,5 @@
+record_dt: 0.1
+hold_V: -70.
+t_stim: 500.0
+t_stop: 700.0
+post_ttx: false

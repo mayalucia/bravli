@@ -1,0 +1,20 @@
+reference:
+    author: "Reyes and Sakmann 1999"
+    psp_amplitude:
+        mean: 0.3
+        std: 0.3
+
+pathway:
+    pre: L23_PC
+    post: L5_TTPC
+    constraints:
+        unique_gids: true
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -74.0
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

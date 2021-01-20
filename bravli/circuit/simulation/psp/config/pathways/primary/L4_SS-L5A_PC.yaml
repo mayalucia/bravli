@@ -1,0 +1,25 @@
+reference:
+    author: "Feldmeyer 2005"
+    psp_amplitude:
+        mean: 0.6
+        std: 0.4
+    synapse_count:
+        mean: 2.4
+        std: 0.9
+
+pathway:
+    pre: L4_SS
+    post: L5A_PC
+    constraints:
+        unique_gids: true
+        min_nsyn: 2
+        max_nsyn: 4
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -73.4
+    t_stim: 800.0
+    t_stop: 900.0
+    post_ttx: false

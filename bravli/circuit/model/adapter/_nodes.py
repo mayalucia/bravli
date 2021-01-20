@@ -23,10 +23,8 @@ class CircuitCellsAdapter(WithFields):
     Adapt methods about a circuit's cells.
     """
 
-    def get_morphology(self, circuit, cell):
-        """
-        Mixin a method to resolve gid from a cell
-        """
+    @staticmethod
+    def _resolve_one_gid(cell):
         try:
             gid = cell.gid
         except AttributeError:
@@ -34,14 +32,20 @@ class CircuitCellsAdapter(WithFields):
                 gid = int(cell)
             except ValueError:
                 raise ValueError("Unhandled cell type %s", cell)
-        
-        return circuit.morphologies.morphologies.get(gid, transform=False)
+        return gid
+
+    def get_morphology(self, circuit, cell):
+        """
+        Mixin a method to resolve gid from a cell
+        """
+        gid = self._resolve_one_gid(cell)
+        return circuit.morphologies.get(gid, transform=False)
 
     def get_axon_length(self, circuit, cell):
         """..."""
         return nm.get("neurite_lengths",
-                      morphology=self.get_morphology(circuit, cell),
-                      neurite_type=np.AXON)[0]
+                      self.get_morphology(circuit, cell),
+                      neurite_type=nm.AXON)[0]
 
     def get_cell_types(self, circuit, query):
         """

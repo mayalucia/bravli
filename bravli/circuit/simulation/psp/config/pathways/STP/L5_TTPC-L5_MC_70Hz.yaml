@@ -1,0 +1,19 @@
+reference:
+    author: "Silberberg and Markram 2007"
+
+pathway:
+    pre: L5_TTPC
+    post: L5_MC_sel_etypes
+    constraints:
+        unique_gids: true
+        min_nsyn: 7
+        max_nsyn: 9
+        max_dist_x: 100.0
+        max_dist_z: 100.0
+
+protocol:
+    record_dt: 0.1
+    hold_V: -72.3
+    t_stim: [500., 514.28571429, 528.57142857, 542.85714286, 557.14285714, 571.42857143, 585.71428571, 600., 1100.]
+    t_stop: 1300.0
+    post_ttx: false

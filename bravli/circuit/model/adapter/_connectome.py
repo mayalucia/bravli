@@ -34,10 +34,10 @@ class CircuitConnectomeAdapter(WithFields):
         """
         return self.get_connectome(circuit_model, of_type=of_type)\
                    .iter_connections(pre=source_population,
-                           post=target_population,
-                           return_synapse_count=with_edge_count,
-                           return_synapse_ids=with_edge_ids,
-                           shuffle=shuffled)
+                                     post=target_population,
+                                     return_synapse_count=with_edge_count,
+                                     return_synapse_ids=with_edge_ids,
+                                     shuffle=shuffled)
 
     def iter_connections_structural(self, circuit_model, **query):
         """
@@ -118,13 +118,13 @@ class CircuitConnectomeAdapter(WithFields):
         """..."""
         connectome = self.get_connectome(circuit_model,
                                          of_type=ConnectomeType.STRUCTURAL)
-        return len(connectome.efferent_synapses(self._resolve_gid(cell)))
+        return len(connectome.efferent_synapses(self._resolve_one_gid(cell)))
 
     def count_efferent_synapses(self, circuit_model, cell):
         """..."""
         connectome = self.get_connectome(circuit_model,
                                          of_type=ConnectomeType.FUNCTIONAL)
-        return len(connectome.efferent_synapses(self._resolve_gid(cell)))
+        return len(connectome.efferent_synapses(self._resolve_one_gid(cell)))
 
     def get_pathways(self, circuit_model,
                      pre_synaptic=None,
