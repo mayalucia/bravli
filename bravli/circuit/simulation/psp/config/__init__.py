@@ -16,7 +16,7 @@ def sample_connections(circuit, pathway, n, shuffle=False):
     conn = circuit.connectome
     iterc = conn.iter_connections(pre=pre, post=post, shuffle=shuffle)
     return list(islice(iterc, 0, n))
-                       
+
 
 def is_viable(circuit, pathway, min_number_connections):
     """..."""
