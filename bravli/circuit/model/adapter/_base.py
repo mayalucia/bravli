@@ -113,7 +113,7 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
         raise TypeError(
             "Bad type {} of layer value {} ".format(type(layer), layer))
 
- 
+
     def get_layers(self, circuit_model):
         return sorted(self._prefix_L(layer)
                        for layer in circuit_model.cells.layer.unique())
@@ -122,6 +122,7 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
         """..."""
         try:
             custom_mtypes = config.mtypes
+
         except AttributeError:
             cells = self.get_cells(circuit_model, **cell_type)
             return cells.mtype.unique().to_list()
@@ -133,6 +134,13 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
             else:
                 return mtypes
         raise RuntimeError("Execution should not reach here.")
+
+    def get_regions(self, circuit_model, **cell_type):
+        """
+        Regions in the circuit_model.
+        """
+        cells = self.get_cells(circuit_model, **cell_type)
+        return cells.region.unique().to_list()
 
     def get_layer_type(self, circuit_model):
         try:

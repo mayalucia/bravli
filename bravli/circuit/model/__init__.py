@@ -154,7 +154,7 @@ class BlueBrainCircuitModel(WithFields):
             at {}""".format(self.path_circuit_data))
         assert isinstance(circuit, BluePyCircuit)
         return circuit
-        
+
     @lazyfield
     def atlas(self):
         """
