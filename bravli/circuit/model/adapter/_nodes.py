@@ -9,12 +9,6 @@ import neurom as nm
 
 from dmt.tk.field import WithFields
 from dmt.tk.collections import get_list
-from neuro_dmt import terminology
-
-X = terminology.bluebrain.cell.x
-Y = terminology.bluebrain.cell.y
-Z = terminology.bluebrain.cell.z
-XYZ = [X, Y, Z]
 
 
 
@@ -102,15 +96,4 @@ class CircuitCellsAdapter(WithFields):
 
         return pd.DataFrame([dict(row)
                              for row in _get_tupled_values(specifiers_cell_type)])
-
-    def get_orientations(self, circuit, positions):
-        """
-        Get the orientations for voxel-positions in the circuit model atlas.
-
-        Arguments
-        -------------
-        positions: np.array<N * 3>
-        """
-        return pd.DataFrame(circuit.orientation_field.lookup(positions)[:, :, 1],
-                            columns=XYZ)
 

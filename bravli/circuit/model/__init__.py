@@ -130,6 +130,26 @@ class BlueBrainCircuitModel(WithFields):
         return Path(self.path_circuit_data).joinpath(*relative_path)
 
     @lazyfield
+    def biodata(self):
+        """Biological data that was used to build the circuit."""
+        path_bioname = self.get_path("bioname")
+
+        assert path_bioname.exists()
+        assert path_bioname.is_dir()
+
+        try:
+            with open(path_bioname / "MANIFEST.yaml", 'r') as fptr:
+                manifest = yaml.load(fptr, Loader=yaml.FullLoader)
+        except FileNotFoundError:
+            return None
+
+        try:
+            return manifest["common"]
+        except KeyError:
+            pass
+        return None
+
+    @lazyfield
     def bluepy_circuit(self):
         """
         An instance of the BluePy circuit object.
@@ -159,18 +179,23 @@ class BlueBrainCircuitModel(WithFields):
     def atlas(self):
         """
         Atlas associated with this circuit.
-
-        TODO: the try/except block below is funky. What might cause the AttributeError?
         """
+        biodata = self.biodata
+        if biodata:
+            try:
+                atlas = self.biodata["atlas"]
+            except KeyError:
+                pass
+            else:
+                return BlueBrainCircuitAtlas(path=Path(atlas))
+
         try:
             return BlueBrainCircuitAtlas(self.bluepy_circuit.atlas)
         except AttributeError:
             return BlueBrainCircuitAtlas(path=Path(self.bluepy_circuit.atlas.dirpath))
-        raise RuntimeError(
-            """
-            Execution of `.atlas(...)` should not have reached here.
-            """
-        )
+
+        raise TypeError("This circuit may not have an atlas!")
+
     @lazyfield
     def cell_collection(self):
         """
@@ -238,6 +263,7 @@ class BlueBrainCircuitModel(WithFields):
         All the layers used in this circuit.
         """
         return self.atlas.layers
+
 
     @lazyfield
     def mtypes(self):
@@ -417,6 +443,9 @@ class BlueBrainCircuitModel(WithFields):
         if isinstance(target, str):
             cell_query["$target"] = target
 
+        if self.cell_collection is None:
+            return None
+
         cells =  self.cell_collection.get(group=cell_query,
                                           properties=properties)
         if isinstance(target, Iterable):
@@ -578,8 +607,6 @@ class BlueBrainCircuitModel(WithFields):
         axis of cells in a voxel.
         """
         return self.atlas.orientation_field
-
-
 
     @lazyfield
     def mconfig(self):

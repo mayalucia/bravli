@@ -51,7 +51,7 @@ class BlueBrainCircuitAtlas(WithFields):
         """
         `Atlas` instance to load the data.
         """
-        return Atlas.open(self.path)
+        return Atlas.open(str(self.path))
 
     @lazyfield
     def hierarchy(self):

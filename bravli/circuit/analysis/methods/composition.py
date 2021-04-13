@@ -61,20 +61,23 @@ def get_divergence_morphology_distribution(adapter, circuit_model, mtype,
     return np.sum(pdf_target * np.log(pdf_target / pdf_reference))
 
 def get_positions_and_orientations(adapter, model, target=None,
-                                   in_left_hemisphere=lambda pos: pos.z < 5700.,
+                                   in_left_hemisphere=None,
                                    **query):
     """
     Get positions and orientations from for a region specified by `query`.
     These positions and orientations will be retrieved from the atlas behind
     the circuit model.
     """
+    if in_left_hemisphere is None:
+        in_left_hemisphere =  lambda pos: pos.z < 5700. #this applies only to the mouse Isocortex
     if target:
         assert not query
         cells = adapter.get_cells(model, target=target)
         xyz = cells[["x", "y", "z"]]
         ijk = adapter.get_voxel_indices(model, xyz.values)
+        index = ijk.assign(layer=cells.layer.values, region=cells.region.values)
         position = pd.DataFrame(xyz.values, columns=list("xyz"),
-                                index=pd.MultiIndex.from_frame(ijk))
+                                index=pd.MultiIndex.from_frame(index))
         orientation = pd.DataFrame(np.vstack(cells["orientation"]
                                              .apply(lambda r: r[:, 1]).values),
                                    columns=["x", "y", "z"],
@@ -88,12 +91,12 @@ def get_positions_and_orientations(adapter, model, target=None,
 
     def get(region, layer):
         positions = (adapter
-                     .visible_voxels(model, {"region": region,
-                                             "layer": layer})
+                     .visible_voxels(model, {"region": region, "layer": layer})
                      .positions)
-        orientations = adapter.get_orientations(model,
-                                                positions.to_numpy(np.float))
+        orientations = (adapter
+                        .get_orientations(model, positions.to_numpy(np.float)))
         orientations.index = positions.index
+
         return pd.concat([positions, orientations],
                          axis=1,
                          keys=["position", "orientation"])

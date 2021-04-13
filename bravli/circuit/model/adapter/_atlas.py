@@ -2,15 +2,37 @@
 Methods that query the circuit's atlas.
 """
 import numpy as np
+import pandas as pd
 
 from dmt.tk.field import WithFields, lazyfield
 from .query import SpatialQueryData, QueryDB  # disable pylint=relative-beyond-top-level
 
+from neuro_dmt import terminology
+
+X = terminology.bluebrain.cell.x
+Y = terminology.bluebrain.cell.y
+Z = terminology.bluebrain.cell.z
+XYZ = [X, Y, Z]
+
 
 class CircuitAtlasAdapter(WithFields):
     """
-    Adapt methods about the atlas underlying the circuit.
+    Adapt methods about the physical space modeled as a brain-atlas
+    that contains the circuit.
     """
+
+    def get_orientations(self, circuit, positions):
+        """
+        Get the orientations for voxel-positions in the circuit model atlas.
+
+        Arguments
+        -------------
+        positions: np.array<N * 3>
+        """
+        return pd.DataFrame(circuit.orientation_field.lookup(positions)[:, :, 1],
+                            columns=XYZ)
+
+
     @lazyfield
     def visible_voxels(self):
         """
@@ -22,6 +44,7 @@ class CircuitAtlasAdapter(WithFields):
         ~     Otherwise, we will need to include the code in the adapter.
         """
 
+
         def _get_visible_voxel_data(circuit, query):
             """..."""
             self.logger.debug(self.logger.get_source_info(),
@@ -30,19 +53,28 @@ class CircuitAtlasAdapter(WithFields):
                               """.format(query))
             visible = circuit.get_mask(**query)
             visible_voxel_ids = {tuple(ijk) for ijk in zip(*np.where(visible))}
-            visible_cell_voxel_ids = list(
-                visible_voxel_ids.intersection(
-                    circuit.voxel_indexed_cell_gids.index.values))
-            visible_cell_gids = circuit.voxel_indexed_cell_gids\
-                                             .loc[visible_cell_voxel_ids]
-            visible_voxel_positions =\
-                circuit.get_voxel_positions(
-                    np.array(list(visible_voxel_ids)))
+            visible_voxel_pos = (circuit
+                                 .get_voxel_positions(np.array(list(visible_voxel_ids))))
+
+            try:
+                voxel_cell_gids = circuit.voxel_indexed_cell_gids
+            except AttributeError:
+                pass
+            else:
+                visible_cell_voxel_ids = list(visible_voxel_ids
+                                              .intersection(voxel_cell_gids
+                                                            .index.values))
+                visible_cell_gids = (voxel_cell_gids
+                                     .loc[visible_cell_voxel_ids])
+
+                return SpatialQueryData(query=query,
+                                        ids=visible_voxel_ids,
+                                        positions=visible_voxel_pos,
+                                        cell_gids=visible_cell_gids)
 
             return SpatialQueryData(query=query,
                                     ids=visible_voxel_ids,
-                                    positions=visible_voxel_positions,
-                                    cell_gids=visible_cell_gids)
+                                    positions=visible_voxel_pos)
 
         return QueryDB(_get_visible_voxel_data)
 
@@ -76,4 +108,3 @@ class CircuitAtlasAdapter(WithFields):
         positions = (self.visible_voxels(circuit, spatial_query)
                      .positions.sample(n=sample_size, replace=True))
         return circuit.get_thickness(positions, relative=relative)
-

@@ -115,8 +115,7 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
 
 
     def get_layers(self, circuit_model):
-        return sorted(self._prefix_L(layer)
-                       for layer in circuit_model.cells.layer.unique())
+        return np.array(circuit_model.layers)
 
     def get_mtypes(self, circuit_model, config=None, **cell_type):
         """..."""

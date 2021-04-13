@@ -64,9 +64,5 @@ class SpatialQueryData(WithFields):
         `pandas.Series` that provides the gids of all the cells in voxels
         that passed the spatial query filter, indexed by their corresponding
         voxel_ids.
-        """)
-
-
-        
-        
-
+        """,
+        __required__=False)
