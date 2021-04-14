@@ -13,8 +13,6 @@ LOGGER = Logger(client=__file__, level=Logger.Level.INFO)
 
 
 def main(args):
-    circuit = helper.load_circuit(args.path_mconfig)
-
     LOGGER.status("Generate pathways:\n {}".format(args))
 
     templates = args.templates or Path(__file__).parent / "templates"
@@ -38,21 +36,28 @@ def main(args):
 
     protocol = path_protocols.name.split('.')[0]
 
+    min_strength = np.int(args.lower_bound or 20)
+
+    circuit = helper.load_circuit(args.path_mconfig)
+
+    regions = args.regions or circuit.regions
+
     LOGGER.status("Generate pathways",
                   "circuit mconfig {}".format(args.path_mconfig),
                   "regions {}".format(args.regions),
                   "central column {}".format(args.central_column),
                   "connection constraints {}".format(connection_constraints),
                   "simulation protocol {}".format(simulation_protocol),
-                  "target {}".format(args.target),
+                  "lower-bound pathway strength {}".format(min_strength),
                   "output {}".format(path_output))
 
-    min_strength = np.int(args.min_number_connections or 100)
-    viable_pathways = helper.connectome.get_viable_pathways(circuit,
-                                                            region=args.regions,
-                                                            central_column=args.central_column,
-                                                            min_strength=min_strength,
-                                                            as_tuples=True)
+    viable_pathways = (helper.connectome
+                       .get_viable_pathways(circuit,
+                                            region=regions,
+                                            central_column=args.central_column,
+                                            lower_bound=min_strength,
+                                            as_tuples=True))
+
     LOGGER.status("number of viable pathways {}".format(len(viable_pathways)))
 
     LOGGER.status("Generate pathway configs")
@@ -64,15 +69,17 @@ def main(args):
                                 simulation_protocol,
                                 min_strength,
                                 path_pathways)
-    if args.regions:
+    if regions:
         targets = ["{}_Column".format(region) if args.central_column else region
-                   for region in args.regions]
+                   for region in regions]
         LOGGER.status("Create PSP targets {}".format(targets))
 
         for target in targets:
             path_target = path_output / target
             path_target.mkdir(parents=False, exist_ok=True)
             psp.config.generate_targets(viable_pathways, target, path_target)
+
+    LOGGER.status("DONE")
 
 
 if __name__ == "__main__":
@@ -96,9 +103,9 @@ if __name__ == "__main__":
                         help="Specify to consider only central columns in regions." )
     parser.set_defaults(central_column=False)
 
-    parser.add_argument("-n", "--min-number-connections",
+    parser.add_argument("-n", "--lower-bound",
                         required=False, default=None,
-                        help="Min number of connections in viable pathway.")
+                        help="Minimum number of connections in a viable pathway.")
 
     parser.add_argument("-c", "--connection-constraints",
                         required=False, default=None,
@@ -106,10 +113,6 @@ if __name__ == "__main__":
 
     parser.add_argument("-p", "--simulation-protocol",
                         required=False, default=None)
-
-    parser.add_argument("-t", "--target",
-                        required=False, default=None,
-                        help="String that represents a named cell target.")
 
     parser.add_argument("-o", "--output",
                         required=False, default=None,
