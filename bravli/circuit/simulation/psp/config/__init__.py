@@ -142,21 +142,22 @@ def generate_configs(pathways,
     return configs
 
 
-def generate_targets(pathways, target=None, path_output=None):
+def generate_psp_targets(pathways, cell_group=None, path_output=None):
     """..."""
     def parse(path):
         return tuple(path.name.split('.')[0].split('-'))
 
     if isinstance(pathways, Path):
-        return generate_targets([parse(p) for p in pathways.glob("*.yaml")],
-                                target, path_output)
+        return generate_psp_targets([parse(p) for p in pathways.glob("*.yaml")],
+                                    cell_group, path_output)
 
     mtypes = {mtype for pathway in pathways for mtype in pathway}
 
+    cell_group = cell_group or {}
+
     def add_target(mtype):
-        query = {"mtype": mtype}
-        if target:
-            query["$target"] = target
+        query = {k: v for k, v in cell_group.items()}
+        query["mtype"] = mtype
         return query
 
     with_target = {mtype: add_target(mtype) for mtype in mtypes}
