@@ -144,7 +144,7 @@ class Configuration(WithFields):
         def get_mtype(group):
             try:
                 return group["mtype"]
-            except KeyError:
+            except TypeError:
                 try:
                     return group.mtype
                 except AttributeError:

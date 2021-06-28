@@ -1,0 +1,7 @@
+#this file maps reference mtypes to circuit mtypes.
+#it is not needed when the reference mtypes are the same as circuit mtypes
+#however PSP validation tool requires that this file be provided.
+#so we provide a dummy mapping!
+
+dummy_mtype:
+  mtype: LXYZ_ABC

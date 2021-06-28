@@ -359,7 +359,7 @@ class RegionLayer(WithFields):
 
         atlas_layers = [
             self.representation.get_layer_region_regex(l)
-            for l in collections.get_list(layer)] 
+            for l in collections.get_list(layer)]
         layer_mask = numpy.any(
             [self.atlas.get_region_mask(
                 atlas_layer,
