@@ -145,6 +145,7 @@ class BlueBrainCircuitAtlas(WithFields):
         return PrincipalAxis(atlas=self.base_atlas)
 
     def get_mask(self,
+                 target=None,
                  region=None,
                  layer=None,
                  depth=None,
@@ -158,6 +159,19 @@ class BlueBrainCircuitAtlas(WithFields):
         as_fraction :: Boolean indicating if `depth` or `height` are fractional
         values of the total thickness.
         """
+        if target:
+            from voxcell.exceptions import VoxcellError
+            assert (region is None
+                    and layer is None
+                    and depth is None
+                    and height is None
+            ), "`target` is the name of a masked atlas-region."
+
+            try:
+                return self._base_atlas.load_data(target).raw
+            except VoxcellError as voxerr:
+                region = target
+
         region_layer = self.region_layer.get_mask(region=region, layer=layer)
                                                   
         if depth is None and height is None:
