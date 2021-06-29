@@ -68,3 +68,7 @@ class SpatialQueryData(WithFields):
         voxel_ids.
         """,
         __required__=False)
+    @lazyfield
+    def empty(self):
+        """..."""
+        return self.positions.empty

@@ -94,7 +94,7 @@ class CircuitAtlasAdapter(WithFields):
 
     def get_layer_thickness_values(self, circuit,
                                    relative=False,
-                                   sample_size=10000,
+                                   sample_size=None,
                                    **spatial_query):
         """
         Get layer thickness sample for the region specified in keyword arguments
@@ -106,6 +106,12 @@ class CircuitAtlasAdapter(WithFields):
         If `relative=True`, result will be thickness divided by total cortical
         thickness.
         """
-        positions = (self.visible_voxels(circuit, spatial_query)
-                     .positions.sample(n=sample_size, replace=True))
+        voxels = self.visible_voxels(circuit, spatial_query)
+        if voxels.empty:
+            return None
+
+
+        positions = (voxels.positions.sample(n=sample_size, replace=False)
+                     if sample_size and sample_size < voxels.shape[0] else
+                     voxels.positions)
         return circuit.get_thickness(positions, relative=relative)
