@@ -51,6 +51,7 @@ class CircuitAtlasAdapter(WithFields):
                               """
                               Compute visible voxel data for query\n\t{}
                               """.format(query))
+            query = query or {}
             visible = circuit.get_mask(**query)
             visible_voxel_ids = {tuple(ijk) for ijk in zip(*np.where(visible))}
             visible_voxel_pos = (circuit

@@ -49,7 +49,7 @@ def get_divergence_morphology_distribution(adapter, circuit_model, mtype,
                                            target, reference,
                                            **query):
     """
-    How much does distribution of morphologies among target cells diverge 
+    How much does distribution of morphologies among target cells diverge
     from that among reference cells?
     """
     def get_distribution(group):

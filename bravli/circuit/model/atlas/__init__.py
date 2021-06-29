@@ -159,7 +159,7 @@ class BlueBrainCircuitAtlas(WithFields):
         values of the total thickness.
         """
         region_layer = self.region_layer.get_mask(region=region, layer=layer)
-                                                  
+
         if depth is None and height is None:
             return region_layer
 

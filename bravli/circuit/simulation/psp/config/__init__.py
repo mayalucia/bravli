@@ -144,11 +144,16 @@ def generate_configs(pathways,
 
 def generate_psp_targets(pathways, cell_group=None, path_output=None):
     """..."""
-    def parse(path):
-        return tuple(path.name.split('.')[0].split('-'))
+    def read_from(path):
+        with open(path, 'r') as fptr:
+            pathway_config = yaml.load(fptr, Loader=yaml.FullLoader)
+
+        pathway = pathway_config["pathway"]
+        return (pathway["pre"], pathway["post"])
 
     if isinstance(pathways, Path):
-        return generate_psp_targets([parse(p) for p in pathways.glob("*.yaml")],
+        configs = pathways.glob("*.yaml")
+        return generate_psp_targets([read_from(config) for config in configs],
                                     cell_group, path_output)
 
     mtypes = {mtype for pathway in pathways for mtype in pathway}
