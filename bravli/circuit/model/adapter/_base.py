@@ -118,7 +118,10 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
         return np.array(circuit_model.layers)
 
     def get_mtypes(self, circuit_model, config=None, **cell_type):
-        """..."""
+        """...
+
+        TODO: Remove config -- that belongs in the analysis, not here.
+        """
         try:
             custom_mtypes = config.mtypes
 
@@ -149,7 +152,9 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
         raise RuntimeError("Execution should not reach here.")
 
     def get_etypes(self, circuit_model, config=None):
-        """..."""
+        """...
+        TODO: Remove config -- that belongs in the analysis, not here.
+        """
         try:
             custom_etypes = config.etypes
         except AttributeError:
@@ -203,22 +208,23 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
             pass
         return 1.0
 
-
     def get_cells(self, circuit_model,
                   properties=None,
                   target=None,
                   **query):
         """..."""
-        cells = circuit_model.get_cells(properties=properties,
+        listed = [properties] if isinstance(properties, str) else properties
+        cells = circuit_model.get_cells(properties=listed,
                                         target=target,
                                         **query)
         query_atlas = terminology.circuit.atlas.filter(**query)
         if not query_atlas:
             return cells
-
         visible_cell_gids = self.visible_voxels(circuit_model, query_atlas)\
                                 .cell_gids\
                                 .values
-        return cells.reindex(visible_cell_gids)\
-                    .dropna()
+        return cells.reindex(visible_cell_gids).dropna()
 
+    def get_input_morphologies(self, circuit_model, for_cells=None):
+        """Morphologies used to build the circuit for some cells."""
+        return circuit_model.morphdb.get(for_cells)["morphology"]
