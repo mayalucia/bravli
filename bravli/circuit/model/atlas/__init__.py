@@ -173,7 +173,7 @@ class BlueBrainCircuitAtlas(WithFields):
                 region = target
 
         region_layer = self.region_layer.get_mask(region=region, layer=layer)
-                                                  
+
         if depth is None and height is None:
             return region_layer
 

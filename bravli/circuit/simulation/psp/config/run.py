@@ -77,7 +77,7 @@ def main(args):
         for target in targets:
             path_target = path_output / target
             path_target.mkdir(parents=False, exist_ok=True)
-            psp.config.generate_targets(viable_pathways, target, path_target)
+            psp.config.generate_psp_targets(viable_pathways, target, path_target)
 
     LOGGER.status("DONE")
 

@@ -329,7 +329,7 @@ class BlueBrainCircuitModel(WithFields):
 
         return pd.DataFrame(self.atlas.indices_to_positions(voxel_ids),
                             columns=XYZ,
-                            index=pd.MultiIndex.from_arrays([voxel_ids[:,0],
+                            index=pd.MultiIndex.from_arrays([voxel_ids[:, 0],
                                                              voxel_ids[:, 1],
                                                              voxel_ids[:, 2]],
                                                             names=["i", "j", "k"]))
@@ -421,7 +421,7 @@ class BlueBrainCircuitModel(WithFields):
             pass
         else:
             cell_query[LAYER] = _get_query_layer(layer)
-                    
+
         return cell_query
 
     @terminology.use(*(terminology.circuit.terms + terminology.cell.terms))

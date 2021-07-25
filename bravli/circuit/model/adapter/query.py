@@ -21,6 +21,8 @@ class QueryDB(WithFields):
 
     @classmethod
     def _hashable(cls, query_dict):
+        if not query_dict:
+            return None
         hashable_items = ((key, make_hashable(value))
                           for key, value in query_dict.items()
                           if value is not None)
