@@ -18,6 +18,7 @@ from dmt.tk.journal import Logger
 from dmt.tk.collections import take
 from neuro_dmt import terminology
 from neuro_dmt.analysis.reporting import CircuitProvenance
+from .build.morphologies.morphdb import MorphDB
 from .atlas import BlueBrainCircuitAtlas
 
 XYZ = [Cell.X, Cell.Y, Cell.Z]
@@ -148,6 +149,11 @@ class BlueBrainCircuitModel(WithFields):
         except KeyError:
             pass
         return None
+
+    @lazyfield
+    def morphdb(self):
+        """..."""
+        return MorphDB(path_file=self.get_path("bioname")/"extNeuronDB.dat")
 
     @lazyfield
     def bluepy_circuit(self):
