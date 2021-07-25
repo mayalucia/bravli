@@ -70,27 +70,34 @@ class MorphDB(MorphFarm):
             return (cell[p] if cell is not None and p in cell and cell[p]
                     else slice(None))
         return [key(p) for p in self.index]
-        return [cell[p] if p in cell and cell[p] else slice(None)
-                for p in self.index]
                 
-    def get_locs(self, cell):
+    def loc(self, cell):
         """Positions in the index."""
-        return self.dataframe.index.get_locs(self.as_key(cell))
+        key = self.as_key(cell)
+
+        try:
+            loc = self.dataframe.index.get_locs(key)
+        except KeyError as err:
+            raise KeyError(f"No entries found for queried cell properties {cell}")
+
+        return (key, loc)
 
     def get(self, cell):
         """
         Get morphology for `cell`.
         """
-        key = self.as_key(cell)
-        locs = self.dataframe.index.get_locs(key)
+        try:
+            key, locs = self.loc(cell)
+        except KeyError:
+            return None
 
         try:
-            applicable = self.dataframe.iloc[locs].reset_index()
+            applicable = self.dataframe.iloc[locs]
         except KeyError:
             return None
 
         queried = [i for i, k in zip(self.index, key) if k != slice(None)]
-        return applicable.drop(columns=queried)
+        return applicable.reset_index().drop(columns=queried)
 
     def count(self, cell=None):
         """
