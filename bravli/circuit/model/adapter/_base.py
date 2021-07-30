@@ -1,11 +1,14 @@
 """
 Adapt BBP's neocortical models.
 """
-
 from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
+
 import neurom as nm
+from bluepy.enums import Cell, Synapse
+
 from dmt.tk.field import Field, lazyfield, WithFields, Record, NA
 from neuro_dmt.utils.geometry import Cuboid
 from neuro_dmt import terminology
@@ -13,6 +16,8 @@ from .query import SpatialQueryData, QueryDB# disable pylint=relative-beyond-top
 from ._connectome import CircuitConnectomeAdapter
 from ._nodes import CircuitCellsAdapter
 from ._atlas import CircuitAtlasAdapter
+
+
 
 class BlueBrainModelAdapter(CircuitCellsAdapter,
                             CircuitConnectomeAdapter,
@@ -224,6 +229,13 @@ class BlueBrainModelAdapter(CircuitCellsAdapter,
                                 .cell_gids\
                                 .values
         return cells.reindex(visible_cell_gids).dropna()
+
+    def get_lme_types(self, model, counts=False):
+        """..."""
+        lme_types = self.get_cells(model, [Cell.LAYER, Cell.MTYPE, Cell.ETYPE])
+        if not counts:
+            return lme_types.drop_duplicates().reset_index(drop=True)
+        return lme_types.value_counts().rename("count")
 
     def get_input_morphologies(self, circuit_model, for_cells=None):
         """Morphologies used to build the circuit for some cells."""

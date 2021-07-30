@@ -427,7 +427,6 @@ class BlueBrainCircuitModel(WithFields):
     @terminology.use(*(terminology.circuit.terms + terminology.cell.terms))
     def get_cells(self,
             properties=None,
-            with_gid_column=True,
             target=None,
             **query):
         """
@@ -452,9 +451,11 @@ class BlueBrainCircuitModel(WithFields):
         if self.cell_collection is None:
             return None
 
-        cells =  self.cell_collection.get(group=cell_query,
-                                          properties=properties)
-        if isinstance(target, Iterable):
+        cells =  (self.cell_collection
+                  .get(group=cell_query, properties=properties))
+        cells.index.name = "gid"
+                                           
+        if target is not None:
             if isinstance(target, str):
                 cells = cells.assign(group=target)
             elif isinstance(target, pd.DataFrame):
@@ -462,8 +463,6 @@ class BlueBrainCircuitModel(WithFields):
             else:
                  cells = cells.reindex(np.sort(np.unique([x for x in target])))\
                               .dropna()
-        if with_gid_column:
-            return cells.assign(gid=cells.index.values)
         return cells
 
     def get_mask(self, relative=True, **query):
