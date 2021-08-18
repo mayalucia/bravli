@@ -3,6 +3,8 @@ Help to access morphologies used to build the circuit.
 """
 
 from collections.abc import Mapping
+from collections import namedtuple
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,17 +14,41 @@ from bluepy import Cell
 from dmt.tk.field import Field, WithFields, lazyfield, field, NA
 
 
+Cell.EMODEL = "emodel"
+
 class CellQueryDB(WithFields):
     """
     Handle queries for a pandas DataFrame that has some columns containing
     cell properties.
-    """
 
-    def __init__(self, dataframe=None, *args, **kwargs):
+    TODO: Place this higher up in class hierarchy.
+    """
+    path_file = Field(
+        """
+        Path to the file to load data from.
+        """,
+        __required__=False)
+
+    def __init__(self, from_object=None, *args, **kwargs):
         """..."""
-        if dataframe is not None:
-            self._raw = dataframe
+        path_file = kwargs.get("path_file", None)
+
+        if from_object is not None:
+            if "path_file" in kwargs:
+                raise ValueError("Duplicate values for data (or its path)!!!"
+                                 f"A {self.__class__.__name__} can be created "
+                                 "either with a dataframe from or path to CSV file "
+                                 "as the first argument. "
+                                 "Or with `path_file` as a keyword argument.")
+
+            if isinstance(from_object, pd.DataFrame):
+                self._raw = from_object
+            else:
+                kwargs["path_file"] = Path(from_object)
+
         super().__init__(*args, **kwargs)
+
+
 
     @lazyfield
     def raw(self):
@@ -76,19 +102,12 @@ class CellQueryDB(WithFields):
         return len(self.dataframe.index.get_locs(self.as_key(cell)))
 
 
-
 class MorphDB(CellQueryDB):
     """
     A class to load the `MorphDB` file that contains morphologies used to
     build a circuit.
     And some code to analyze morphologies in a circuit.
     """
-
-    path_file = Field(
-        """
-        Path to the file to load data from.
-        """,
-        __required__=False)
     separator = Field(
         """
         Separator between the columns in the MorphDB file.
@@ -142,14 +161,48 @@ class MorphDB(CellQueryDB):
         self.raw.to_csv(path, sep=self.separator, header=False, index=False)
 
 
+def extract_emodel(from_object):
+    """..."""
+    try:
+        split = from_object.split
+    except AttributeError:
+        mecombo = from_object[Cell.ME_COMBO]
+    else:
+        parts = split('_')
+        return parts[1]
+    return extract_emodel(mecombo)
+
+def expand_mecombo(row):
+    """Expand the me_combo in a MorphDB row.
+    An `me_combo` label is composed of several parts,
+    each the value of a cell-property, and which together define the group
+    of cells to which `me_combo` applies.
+    """
+    parts = row[Cell.ME_COMBO].split('_')
+    return pd.Series({Cell.ETYPE: parts[0],
+                      Cell.MTYPE: '_'.join(parts[2:4]),
+                      Cell.LAYER: int(parts[4]),
+                      Cell.MORPHOLOGY: '_'.join(parts[5:]),
+                      Cell.EMODEL: parts[1],
+                      Cell.ME_COMBO: row[Cell.ME_COMBO]})
+
+
+def label_mecombo(cell):
+    """Label an me-combo of a cell represented as a pandas.Series
+    containing properties.
+    """
+    return f"{cell.etype}_{cell.emodel}_{cell.mtype}_{cell.layer}_{cell.morphology}"
+
+
 class MorphElectroComboes(CellQueryDB):
     """
     Query morpho-electro-physiological types.
     """
     path_file = Field(
         """
-        that contains the mecombo --> memodels as a table.
-        """)
+        Path to the file to load data from.
+        """,
+        __required__=False)
     separator = Field(
         "Separator between the columns.",
         __default_value__=r"\s+")
@@ -215,7 +268,7 @@ class MorphElectroComboes(CellQueryDB):
         return emodels
 
     @lazyfield
-    def map_mecombo_emodel(self):
+    def map_mecombo_to_emodel(self):
         return self.raw.set_index("me_combo")[self.emodel_variables]
 
     def to_morphdb_like(self, this_one):
@@ -226,4 +279,4 @@ class MorphElectroComboes(CellQueryDB):
         for a MorphDB instance.
         """
         raise NotImplementedError("TODO")
-    
+
