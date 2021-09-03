@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+# pylint: disable=F0401,E0611,W0142
+import sys
+from setuptools import setup, find_packages
+
+if sys.version_info < (3, 6):
+    sys.exit("Sorry, Python < 3.6 is not supported.")
+
+setup(
+    name="BrainReconstructionAnalysis&ValidationLibrary",
+    version="0.0.1",
+    packages=find_packages(),
+    install_requires=[
+        "numpy>=1.18.0",
+        "pandas>=0.25.1",
+        "neurom>=1.3.0",
+        "PyYAML>=3.10",
+        "bluepysnap>=0.0.0",
+        "Cheetah3",
+        "nose>=1.3",
+        "pytest>=5.1.3"],
+    author="Blue Brain Project",
+    author_email="",
+    description="Analyze and validate computational models",
+    license="GPL",
+    url="",
+    download_url="",
+    include_package_data=False,
+    keywords=(
+        'computational neuroscience',
+        'computational models',
+        'analysis',
+        'BlueBrainProject'),
+    classifiers=[
+        'Development Status :: Alpha',
+        'Environment :: Console',
+        'License :: LGPL',
+        'Operating System :: POSIX',
+        'Topic :: Scientific/Engineering',
+        'Topic :: Utilities'],
+    )
