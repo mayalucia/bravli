@@ -14,6 +14,9 @@ class Triplets(namendtuple("Triplets",
     pass
 
 
+NodeType = (int, np.int, np.int32, np.int64)
+
+
 class NodeConnectivity:
     """Connectivity of a single node.
     """
@@ -51,17 +54,52 @@ class NodeConnectivity:
         return (self.reference_connections
                 .set_index(Synapse.POST_GID)[Synapse.PRE_GID])
 
-    def resolve_view(self, direction, x=None):
+    def resolve_view(self, direction):
         """..."""
-        if x is not None:
-            view = self.resolve_view(direction)
-            return view.loc[x]
-
         if direction == Direction.AFF:
             return self.postview
         if direction == Direction.EFF:
             return preview
         raise ValueError(f"Illegal direction {direction}")
+
+    def get_neighbors(self, at, of_node):
+        """..."""
+        view = self.resolve_view(at)
+        try:
+            return view.loc[x]
+        except KeyError:
+            return None
+        raise RuntimeError("Python should not have executed this.")
+
+    @staticmethod
+    def ensure_series(xs, name=None):
+        """..."""
+        return xs if isinstance(xs, pd.Series) else pd.Series(xs, name=name)
+
+    def count_common_neighbors(self, pre, post, directions=None):
+        """Number of nodes in reference population adjacent to both pre and post
+        If pre and post are node (ids), a number.
+        If pre and post are groups of ids, then a collected values for each (x,y)
+        where x in pre, and each y in post.
+        """
+        if isinstance(pre, NodeType) and isinstance(post, NodeType):
+            directions = directions or (Direction.AFF, Direction.AFF)
+            neighbors_pre = self.get_neighbors(at=directions[0], of_node=pre)
+            neighbors_post = self.get_neighbors(at=directions[1], of_node=post)
+            return np.in1d(neighors_pre, neighbors_post).sum()
+
+        if isinstance(pre, NodeType):
+            x = pre
+            ys = self.ensure_series(ys, Synapse.POST_GID)
+            return ys.apply(lambda y: self.count_common_neighbors(x, y, directions))
+
+        if isinstance(post, NodeType):
+            xs = self.ensure_series(xs, Synapse.PRE_GID)
+            y = post
+            return xs.apply(lambda x: self.count_common_neighbors(x, y, directions))
+
+        return xs.apply(lambda x: self.count_common_neighbors(x, ys, directions))
+
 
     def count_common_neighbors(self, x, ys, direction=None):
         """..."""
@@ -69,13 +107,10 @@ class NodeConnectivity:
             return ys.apply(lambda y: self.count_common_neighbors(x, y,
                                                                   direction))
         else:
-            asswrt isinstance(ys, (int, np.int, np.int64))
+            assert isinstance(ys, (int, np.int, np.int64))
             y = ys
 
         direction = direction or (Direction.AFF, Direction.AFF)
-
-        if direction[0] != direction[1]
-            raise NotImplementedError(f"direction: {direction}")
 
         return np.in1d(self.resolve_view(direction[0], x),
                        self.resovle_view(direction[1], y))
