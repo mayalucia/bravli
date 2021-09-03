@@ -9,9 +9,9 @@ import yaml
 import numpy as np
 import pandas as pd
 import neurom
-from bluepy.v2.circuit import Circuit as BluePyCircuit
+from bluepy.circuit import Circuit as BluePyCircuit
 from bluepy.exceptions import BluePyError
-from bluepy.v2.enums import Cell, Segment, Section
+from bluepy.enums import Cell, Segment, Section
 from dmt.tk import collections
 from dmt.tk.field import Field, LambdaField, lazyfield, WithFields, Record, NA
 from dmt.tk.journal import Logger

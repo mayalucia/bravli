@@ -15,6 +15,7 @@ setup(
         "pandas>=0.25.1",
         "neurom>=1.3.0",
         "PyYAML>=3.10",
+        "bluepy>=2.0.0"
         "bluepysnap>=0.0.0",
         "Cheetah3",
         "nose>=1.3",

@@ -5,7 +5,7 @@ from itertools import islice, product
 from enum import Enum
 from pathlib import Path
 import yaml
-from bluepy.v2.enums import Cell
+from bluepy.enums import Cell
 from dmt.tk.journal import Logger
 from .config import Configuration
 

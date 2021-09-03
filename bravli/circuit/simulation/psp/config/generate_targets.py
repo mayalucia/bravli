@@ -13,8 +13,8 @@ import argparse
 from pathlib import Path
 import yaml
 import numpy as np
-from bluepy.v2.circuit import Circuit
-from bluepy.v2.enums import Cell
+from bluepy.circuit import Circuit
+from bluepy.enums import Cell
 from dmt.tk.journal import Logger
 from bravli.circuit.simulation import psp
 from nmc_portal_resources_cli.utils import helper
