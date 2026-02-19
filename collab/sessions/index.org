@@ -1,0 +1,16 @@
+#+title: Session Index
+#+startup: showall
+
+* Sessions
+
+| Date       | Title                     | File                                  | Summary                                                |
+|------------+---------------------------+---------------------------------------+--------------------------------------------------------|
+| 2026-02-18 | The Fly Brain Sprint      | [[file:2026-02-18-fly-brain-sprint.org]] | BBP archaeology to running portal in two nights (Ph 0-5) |
+
+* Key Documents
+
+| Document                        | Location                       | What it is                                                     |
+|---------------------------------+--------------------------------+----------------------------------------------------------------|
+| Development log                 | [[file:../../develop/devlog.org]]  | Running log: roadmap, module table, per-phase entries           |
+| Research landscape              | [[file:../../develop/landscape.org]] | Literature survey: 60 papers, 3 rings, 10 investigations       |
+| Project context                 | [[file:../context.org]]            | What bravli is, heritage, methodology                          |

@@ -466,13 +466,21 @@ def simulate_view(circuit=None):
             delay_steps=18,
         )
 
+    # --- Scale-aware defaults ---
+    is_large = circuit.n_neurons > 10000
+    default_dur = 100 if is_large else 500
+    max_dur = 500 if is_large else 2000
+    max_stim = min(200, circuit.n_neurons) if is_large else min(50, circuit.n_neurons)
+    default_stim = 50 if is_large else 10
+    n_record = min(10, circuit.n_neurons)
+
     # --- Widgets ---
     duration_slider = pn.widgets.IntSlider(
-        name="Duration (ms)", start=100, end=2000, step=100, value=500,
+        name="Duration (ms)", start=50, end=max_dur, step=50, value=default_dur,
     )
     n_stim = pn.widgets.IntSlider(
-        name="Stimulated neurons", start=1, end=min(50, circuit.n_neurons),
-        step=1, value=10,
+        name="Stimulated neurons", start=1, end=max_stim,
+        step=1, value=default_stim,
     )
     stim_type = pn.widgets.Select(
         name="Stimulus", options=["poisson", "step"], value="poisson",
@@ -485,9 +493,16 @@ def simulate_view(circuit=None):
     # --- Result storage ---
     result_holder = [None]
 
+    size_note = ""
+    if is_large:
+        size_note = (
+            " **Large circuit** — simulation may take minutes. "
+            "Start with short durations (50-100 ms)."
+        )
+
     status_md = pn.pane.Markdown(
-        f"*Circuit: {circuit.n_neurons} neurons, {circuit.n_synapses} synapses. "
-        f"Configure and press Run.*",
+        f"*Circuit: {circuit.n_neurons:,} neurons, {circuit.n_synapses:,} synapses."
+        f"{size_note} Configure and press Run.*",
         styles={"color": "#c9d1d9"},
     )
 
@@ -515,7 +530,7 @@ def simulate_view(circuit=None):
         status_md.object = "*Running...*"
         result = simulate(
             circuit, duration=dur, dt=0.1, stimulus=stim,
-            record_v=True, record_idx=list(range(min(10, circuit.n_neurons))),
+            record_v=True, record_idx=list(range(n_record)),
         )
         result_holder[0] = result
 
@@ -580,10 +595,10 @@ def simulate_view(circuit=None):
     run_button.on_click(_run)
 
     provocation = pn.pane.Markdown(
-        "> *You are watching 100 differential equations evolve in time. "
+        f"> *You are watching {circuit.n_neurons:,} differential equations evolve in time. "
         "Each spike is a threshold crossing — a discontinuity in a continuous "
-        "dynamical system. The raster plot is a projection: it shows you when "
-        "neurons fire but hides why. The voltage traces show the subthreshold "
+        "dynamical system. The raster plot is a projection: it shows you /when/ "
+        "neurons fire but hides /why/. The voltage traces show the subthreshold "
         "struggle — the tug-of-war between excitation and inhibition, between "
         "the leak current pulling toward rest and the synaptic current pushing "
         "toward threshold. Change the stimulus strength. Watch the transition "

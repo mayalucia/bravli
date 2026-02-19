@@ -93,7 +93,7 @@ class Circuit:
             f"  Heterogeneous: {self.is_heterogeneous}",
             f"  tau_syn: {self.tau_syn} ms",
             f"  delay: {self.delay_steps} steps",
-            f"  weight range: [{self.weights.min():.3f}, {self.weights.max():.3f}] mV",
+            f"  weight range: [{self.weights.min():.3f}, {self.weights.max():.3f}] mV" if len(self.weights) > 0 else "  weight range: (no synapses)",
         ]
         if self.neuron_labels is not None and "model_mode" in self.neuron_labels.columns:
             modes = self.neuron_labels["model_mode"].value_counts()
