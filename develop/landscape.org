@@ -1,0 +1,837 @@
+#+title: The Landscape of Questions
+#+subtitle: What we could start to understand with what we already have
+#+author: bravli Collaboration
+#+date: <2026-02-19 Wed>
+#+startup: overview
+#+options: toc:3
+
+* Premise
+
+We have built a toolkit — =bravli= — that holds the complete wiring diagram of
+an adult /Drosophila/ brain (139,255 neurons, 54.5M synapses), a pure-numpy LIF
+simulator, cell electrical models for every neuron type, a synapse physiology
+database, and an interactive portal. The question is not "what can we build
+next?" but "what can we /understand/ next?"
+
+This document maps the landscape of open questions in three concentric rings:
+
+1. *The fly connectome* — what the FlyWire data has revealed, and what it hides
+2. *Computational neuroscience methodology* — the tools and assumptions we bring
+3. *The reconstruction programme* — whether building digital twins produces
+   understanding, and what 30 years of C. elegans teaches us about the answer
+
+For each question, we note what our toolkit can already probe, and what would
+need to be added.
+
+* Ring 1: The Drosophila Connectome
+
+** What FlyWire Revealed
+
+*** The Wiring Diagram Itself
+
+- Dorkenwald S et al. (2024). "Neuronal wiring diagram of an adult brain."
+  /Nature/ 634.
+
+  139,255 neurons. 54.5 million synapses. 8,453 cell types. 78 neuropil
+  compartments. The first complete wiring diagram of an adult brain at synaptic
+  resolution. The graph is highly heterogeneous — some neurons have thousands of
+  partners, others have few. The degree distribution is heavy-tailed but not
+  strictly scale-free.
+
+*** Cell Types and Annotation
+
+- Schlegel P et al. (2024). "Whole-brain annotation of cell types." /Nature/ 634.
+
+  Systematic morphological annotation of all 139K neurons into cell types,
+  cell classes, and super-classes. Key finding: strong connections (\geq 10
+  synapses) are highly conserved between the FAFB brain (FlyWire) and the
+  hemibrain (different individual), but connection /weights/ are surprisingly
+  variable — variability across brains is comparable to variability across the
+  two hemispheres of the same brain. Kenyon cells are nearly 2x more numerous
+  in FAFB than hemibrain.
+
+  /Open question/: if the connectome varies this much between individuals, how
+  robust are the dynamics we simulate? Is the functional circuit an invariant
+  emerging from variable wiring?
+
+*** Network Architecture
+
+- Lin A et al. (2024). "Network statistics of the whole-brain connectome of
+  /Drosophila/." /Nature/ 634.
+
+  Rich-club organization with ~30% of neurons classified as hubs. This is unlike
+  the sparse random networks assumed by balanced-state theory. Small-world
+  properties: high clustering relative to random graphs, but short average path
+  lengths. Modular-hierarchical organization rather than classic rich-club.
+
+  /Bravli can probe this now/: the connectivity matrix and pathway tools are
+  already built. What's missing: graph-theoretic analysis module (motif census,
+  community detection, rich-club coefficients).
+
+*** Simulation at Scale
+
+- Shiu PK et al. (2024). "A leaky integrate-and-fire computational model based
+  on the connectome of the entire adult /Drosophila/ brain." /Nature/ 634.
+
+  LIF simulation of all ~127K spiking neurons. Brian2 with C++ codegen. ~5
+  minutes per second of biological time. /Key finding/: stimulating known gustatory
+  receptor neurons produced activation patterns matching taste circuit expectations
+  — the first validation that connectome topology + LIF dynamics recover
+  biologically plausible activity patterns.
+
+  /Key limitation/: a single free parameter ($W_{syn} = 0.275$ mV per synapse
+  contact) fit to produce "reasonable" firing rates. No learning, no
+  neuromodulation, no graded transmission.
+
+*** Topology Dominates
+
+- Zhang Z et al. (2024). "Network structure determines the computations performed
+  in brain-inspired model." /iScience/ 27(5):109863.
+
+  LIF, Izhikevich, and sigmoid rate neurons produce the /same activation patterns/
+  on the FlyWire connectome. The connectivity matrix dominates; the single-neuron
+  model is a second-order effect.
+
+  /This is profound — and suspicious/. When does the neuron model start to
+  matter? Known counterexamples: timing-sensitive computations (coincidence
+  detection, sequence generation), circuits where intrinsic dynamics set the
+  functionally relevant timescale (stomatogastric ganglion), resonator neurons
+  that act as bandpass filters (LIF is purely an integrator).
+
+  /Bravli can test this directly/: simulate the same circuit with LIF,
+  Izhikevich, and rate models. Measure when predictions diverge. The MB
+  microcircuit is the right testbed — its function (associative learning)
+  depends on timing.
+
+*** Larval vs Adult
+
+- Winding M et al. (2023). "The connectome of an insect brain." /Science/
+  379:eadd9330.
+
+  The entire larval brain: 3,016 neurons, 548,000 synapses, 93 neuron types.
+  Development substantially reshapes connectivity — comparing larval vs adult
+  reveals which circuits are conserved through metamorphosis and which are
+  rebuilt. The larva is the only whole-brain connectome with complete behavioral
+  characterization.
+
+*** The Effectome
+
+- Pospisil DA et al. (2024). "The path to the effectome." /Nature/ 634.
+
+  Proposed the "effectome" — causal network derived from the connectome by
+  measuring the actual effect of each connection on postsynaptic activity.
+  Connectivity alone is ambiguous (a synapse can be strong or weak, facilitating
+  or depressing). The effectome disambiguates.
+
+  /This is what simulation gives us/: the LIF engine computes the effectome
+  implicitly. By comparing simulated responses to experimental recordings, we
+  can ask which connections are causally important.
+
+** What FlyWire Hides
+
+*** The Synapse Count Threshold
+
+The FlyWire connectome applies a threshold of $\geq 5$ synapses to define a
+"connection." Below this, edges are excluded from the Codex database. The full
+dataset contains vastly more connections at lower counts (heavy-tailed
+distribution).
+
+A single /Drosophila/ synapse is a T-bar structure with multiple postsynaptic
+densities — fundamentally different from a mammalian bouton. Whether 1--4
+synapse connections are segmentation noise or biologically meaningful weak
+connections (used for neuromodulatory gating, stochastic computation, or
+developmental scaffolding) is genuinely unknown.
+
+The threshold dramatically affects network topology: rich-club organization,
+motif statistics, path lengths all change.
+
+/Bravli can probe this/: vary the threshold parametrically and measure the
+effect on simulation dynamics. This is a computational experiment no wetlab
+can do.
+
+*** Gap Junctions
+
+FlyWire maps only chemical synapses. Electrical synapses (gap junctions, via
+innexin proteins) are invisible in the EM preparation. Eight innexin genes are
+encoded in /Drosophila/; shakB is broadly expressed.
+
+- Phelan P, Bhatt DV (2023). "Gap junctions: The missing piece of the
+  connectome." /Current Biology/ 33(14):R843-R846.
+
+Gap junctions desynchronize motor circuits to stabilize flight (Hurley et al.
+2023, /Nature/), mediate rapid coupling in the giant fiber escape circuit, and
+modulate circadian rhythms. For circuits where synchronization or fast
+bidirectional coupling matters, this is a serious omission.
+
+/Bravli gap/: the LIF engine has no mechanism for electrical coupling. Adding
+gap junctions (as conductance-based bidirectional connections) is straightforward
+but requires a data source — no connectome-scale gap junction map exists yet.
+
+*** Neurotransmitter Co-release and Volume Transmission
+
+The connectome assigns one NT per neuron (Dale's law). But co-transmission is
+documented: ~150 neuropeptide genes are expressed in the /Drosophila/ brain.
+Neuropeptides act via volume transmission (paracrine signaling over micrometers
+to tens of micrometers) on timescales of seconds to minutes.
+
+- Nassel DR, Zandawala M (2019). "Chemoconnectomics: Mapping Chemical
+  Transmission in /Drosophila/." /Neuron/ 101(5):876-886.
+
+This creates a "wireless connectome" overlaid on the wired one — invisible to
+EM, critical for function.
+
+*** The Graded-Potential Problem
+
+Many neurons in the optic lobe — lamina monopolar cells (L1-L5), many medulla
+interneurons, amacrine cells — operate through graded (analog) potentials, not
+spikes. The lamina is an analog processing layer. Photoreceptors are graded.
+
+- Laughlin S (1989). "The role of sensory adaptation in the retina." /J Exp Biol/
+  146(1):39-62.
+- Juusola M et al. (2017). "Microsaccadic sampling of moving image information
+  provides /Drosophila/ hyperacute vision." /eLife/ 6:e26117.
+
+For the ~60,000 neurons per optic lobe (~120,000 total, nearly half the brain!),
+applying a spiking LIF model may be fundamentally inappropriate. Graded synaptic
+transmission is continuous and voltage-dependent, not spike-triggered.
+
+/Bravli has the right architecture/: =GradedParams= exists in =cell_models.py=,
+setting threshold to +100 mV (unreachable). This makes the LIF a leaky
+integrator — a crude but functional approximation. The real question is whether
+this approximation preserves the computations the optic lobe performs (motion
+detection, figure-ground separation, hyperacute vision).
+
+Three options for improvement:
+1. Rate-based neurons for graded regions (different framework, connect outputs
+   to spiking central brain)
+2. High-frequency LIF approximation (quasi-continuous output)
+3. Hybrid simulator (both spiking and rate-based, with conversion rules)
+
+*** Neuromodulatory Systems
+
+~280 dopaminergic neurons (PAM cluster: reward; PPL1: aversion), ~100
+serotonergic, ~130 octopaminergic. The connectome tells us where modulatory NTs
+are /released/ but not where they are /received/ or /how/ (receptor type
+determines sign and timecourse).
+
+- Aso Y, Rubin GM (2016). "Dopaminergic neurons write and update memories with
+  cell-type-specific rules." /eLife/ 5:e16135.
+
+The mushroom body is best characterized: 15 compartments, each with specific DAN
+innervation and MBON output. Different DANs encode punishment vs reward; memory
+formation and extinction use distinct DAN subsets.
+
+/Bravli gap/: the physiology module has sign-zero entries for aminergic NTs
+(modulatory, no fast PSP). This is honest but incomplete. Receptor expression
+data, as it becomes available from single-cell transcriptomics, would allow
+mapping modulatory effects to specific postsynaptic cell types.
+
+*** Developmental Variation
+
+The connectome is one brain. Connection weights vary substantially between
+individuals (Schlegel et al. 2024). KC counts differ nearly 2x between FAFB and
+hemibrain.
+
+/Bravli can probe this/: perturbation analysis. Resample connection weights,
+add/remove neurons within cell type counts, and measure how robust simulation
+predictions are. If predictions are fragile to biologically realistic variation,
+they are not predictions — they are curve fits.
+
+* Ring 2: Computational Neuroscience Methodology
+
+** Point-Neuron vs Morphologically Detailed Models
+
+*** When does morphology matter?
+
+- Poirazi P, Branchereau P, Bhatt DV (2003). "Pyramidal neuron as a two-layer
+  network." /PNAS/ 100(20):11817-11822.
+
+  A single CA1 pyramidal neuron with active dendrites functions as a two-layer
+  feedforward network. Individual dendritic branches are independent sigmoidal
+  units; the soma integrates their outputs. A point neuron cannot compute
+  linearly non-separable functions (XOR) that a morphological neuron can.
+
+- Gidon A et al. (2020). "Dendritic action potentials and computation in human
+  layer 2/3 cortical neurons." /Science/ 367(6473):83-87.
+
+  Human cortical dendrites generate calcium-mediated dCaAPs implementing XOR-like
+  computation. Mammalian-specific; the question is whether fly neurons exhibit
+  analogous dendritic nonlinearities.
+
+- Beniaguev D, Segev I, London M (2021). "Single cortical neurons as deep
+  artificial neural networks." /Neuron/ 109(17):2727-2739.
+
+  A 5-to-8-layer temporal convolutional network is needed to approximate a
+  single L5 pyramidal cell. Removing NMDA receptors reduces this to one hidden
+  layer. For fly neurons (smaller, no NMDA receptors), the LIF approximation
+  collapses far less computation than for mammalian pyramids.
+
+*** The verdict for Drosophila
+
+/Drosophila/ neurons are small (~5--10 \mu{}m cell bodies), many are
+electrotonically compact. The LIF approximation is more defensible here than
+anywhere in mammalian cortex. The major exception: neurons with distinct input
+and output compartments separated by significant cable distance (some projection
+neurons, Kenyon cells with calyx dendrites and lobe axons).
+
+/Path forward/: start with LIF (justified by Zhang et al.), add
+two-compartment models for specific cell types where network behavior changes,
+validate against multicompartment models for calibration.
+
+** E/I Balance and Network Dynamics
+
+*** The balanced network theory
+
+- van Vreeswijk C, Sompolinsky H (1996). "Chaos in neuronal networks with
+  balanced excitatory and inhibitory activity." /Science/ 274(5293):1724-1726.
+
+  In large random networks with strong synapses, E and I approximately cancel,
+  producing an asynchronous irregular (AI) state. Individual neurons fire
+  irregularly despite deterministic inputs. The irregularity arises from
+  near-cancellation of large opposing currents.
+
+- Brunel N (2000). "Dynamics of sparsely connected networks of excitatory and
+  inhibitory spiking neurons." /J Comp Neurosci/ 8(3):183-208.
+
+  The complete phase diagram of LIF networks: synchronous regular (SR),
+  synchronous irregular (SI), asynchronous regular (AR), asynchronous irregular
+  (AI). The AI state corresponds to the balanced regime. /This is the benchmark
+  paper for LIF network simulators./
+
+*** Does E/I balance hold in the fly?
+
+FlyWire NT predictions give us E/I identity for every neuron: ~60-70%
+cholinergic (excitatory), ~25-30% GABAergic (inhibitory), glutamatergic
+context-dependent. Ratio varies dramatically by region — optic lobe has more
+inhibition, MB is predominantly excitatory (cholinergic KCs) with specific
+inhibitory elements (APL, DPM).
+
+The original theory assumes large N, sparse random connectivity, strong
+synapses. The fly central brain (~19K non-optic neurons) has highly structured,
+genetically specified wiring. Whether balanced-state dynamics emerge from this
+structured topology is genuinely unknown.
+
+- PRL 134, 068403 (2025). "Excitation-Inhibition Balance Controls Information
+  Encoding in Neural Populations." Information encoding peaks at edge of linear
+  stability; non-normal connectivity is crucial.
+
+/Bravli can test this directly/: reproduce Brunel's phase diagram with random
+connectivity (validation), then swap in FlyWire connectivity and measure which
+regime the fly brain falls into. Compute E/I current balance per neuron,
+Fano factor, CV of ISIs, population correlation structure.
+
+*** Inhibition-stabilized networks (ISN)
+
+- Tsodyks MV et al. (1997). "Paradoxical effects of external modulation of
+  inhibitory interneurons." /J Neurosci/ 17(11):4382-4388.
+
+  ISN prediction: stimulating inhibitory neurons causes /network/-level
+  inhibition to /decrease/ (paradoxical response). Confirmed in mouse cortex
+  with optogenetics.
+
+  /Does the fly brain operate as an ISN?/ Unknown, but testable in silico:
+  stimulate GABAergic neurons and look for paradoxical responses. A novel
+  contribution if done carefully.
+
+** Spike-Timing-Dependent Plasticity and Learning
+
+*** Classical STDP
+
+- Bi G-Q, Poo M-M (1998). "Synaptic modifications in cultured hippocampal
+  neurons." /J Neurosci/ 18(24):10464-10472.
+
+  Pre-before-post (\le 20 ms): LTP. Post-before-pre: LTD. The canonical
+  learning rule.
+
+*** Three-factor learning (reward-modulated STDP)
+
+- Izhikevich EM (2007). "Solving the distal reward problem through linkage of
+  STDP and dopamine signaling." /Cerebral Cortex/ 17(10):2443-2452.
+
+  Classical STDP creates a synapse-local /eligibility trace/ that decays over
+  seconds. When a global neuromodulatory signal (dopamine) arrives, it converts
+  the trace into an actual weight change. Three factors: (1) presynaptic
+  activity, (2) postsynaptic activity, (3) neuromodulatory signal.
+
+- Fremaux N, Gerstner W (2016). "Neuromodulated spike-timing-dependent
+  plasticity, and theory of three-factor learning rules." /Front Neural
+  Circuits/ 9:85.
+
+  Three-factor STDP converges to the same solution as REINFORCE (Williams 1992),
+  providing a biologically plausible implementation of reinforcement learning.
+
+*** The Drosophila mushroom body — the best-characterized learning circuit
+
+- Aso Y et al. (2014). "The neuronal architecture of the mushroom body provides
+  a logic for associative learning." /eLife/ 3:e04577.
+
+  15 compartments, each with specific DAN innervation and MBON output. Different
+  compartments encode approach vs avoidance. Memory = depression of KC\to MBON
+  synapses in the compartment corresponding to experienced valence.
+
+- Hige T et al. (2015). "Heterosynaptic plasticity underlies aversive olfactory
+  learning in /Drosophila/." /Neuron/ 88(5):985-998.
+
+  KC\to MBON synapses are depressed when KC activity coincides with DAN activity
+  in the same compartment. Heterosynaptic: the DAN acts on the KC\to MBON synapse,
+  not its own. Sparse KC coding (~5-10% active per odor) is maintained by APL
+  feedback inhibition — critical for pattern separation.
+
+- Handler A et al. (2019). "Distinct dopamine receptor pathways underlie the
+  temporal sensitivity of associative learning." /Cell/ 178(1):60-75.
+
+  /Different MB compartments have different STDP-like timing rules./ Some require
+  KC before DAN (forward pairing), others require the reverse. Receptor type
+  (Dop1R1, Dop1R2, DopEcR) determines which rule applies. You cannot model MB
+  learning with a single STDP rule — you need compartment-specific rules.
+
+- Modi MN et al. (2020). "The /Drosophila/ mushroom body: from architecture to
+  algorithm and back." /Annu Rev Neurosci/ 43:465-484.
+
+  Short-term memory forms in \gamma lobe, consolidates to \alpha/\beta lobes.
+  Sleep-dependent consolidation involves DAN-MBON feedback loops.
+
+*** What we can reproduce with LIF + three-factor STDP
+
+*Yes*: single-trial olfactory conditioning, extinction, differential
+conditioning (odor A+ vs odor B-). The essential ingredients: ~2000 KCs with
+APL feedback inhibition maintaining ~5-10% sparseness, compartmentalized
+KC\to MBON synapses with dopamine-gated depression, DAN types mapped to correct
+compartments.
+
+*Not yet*: memory consolidation (requires sleep-like states and inter-compartment
+DAN-MBON dynamics), second-order conditioning, context-dependent recall.
+
+/This is the most immediately actionable research direction./ The MB is small
+enough (~2500 KCs, ~35 MBONs, ~130 DANs) to simulate as an isolated circuit,
+then embed in the full brain.
+
+** Stochastic Processes in Neural Computation
+
+*** Noise is not nuisance
+
+- Faisal AA, Selen LP, Wolpert DM (2008). "Noise in the nervous system." /Nature
+  Reviews Neurosci/ 9:292-303.
+
+  Sources: ion channel stochasticity, vesicle release probability, network-
+  generated variability. Each has distinct computational consequences.
+
+- Allen C, Stevens CF (1994). "An evaluation of causes for unreliability of
+  synaptic transmission." /PNAS/ 91(22):10380-10383.
+
+  Central synapses fail ~50-90% of the time. This is not sloppiness — it is
+  actively maintained. Theories: energy efficiency, decorrelation of population
+  activity, gain control via modulation of release probability.
+
+*** Stochastic resonance
+
+- Longtin A (1993). "Stochastic resonance in neuron models." /J Stat Phys/
+  70(1):309-327.
+- Gammaitoni L et al. (1998). "Stochastic resonance." /Rev Mod Phys/ 70(1):223-287.
+
+  An optimal noise level enhances detection of subthreshold signals. Not just
+  a curiosity — cricket cercal neurons exploit it for predator detection.
+  Whether the /Drosophila/ visual or olfactory periphery benefits from stochastic
+  resonance is testable.
+
+*** Balanced networks and active decorrelation
+
+- Renart A et al. (2010). "The asynchronous state in cortical circuits."
+  /Science/ 327(5965):587-590.
+
+  In balanced networks, E/I interplay actively suppresses pairwise correlations.
+  Noise is essential for maintaining the asynchronous state. The network computes
+  via fluctuation amplitude, not mean input.
+
+/Bravli implementation path/: per-synapse Bernoulli failure (cheap — one random
+draw per synapse per spike), intrinsic noise current (Ornstein-Uhlenbeck process
+per neuron), measurement tools for Fano factor, CV_ISI, pairwise correlations.
+These are diagnostics for whether the simulated network is in a biologically
+realistic dynamical regime.
+
+** Neuromodulation as State Switching
+
+*** The circuit has no default state
+
+- Marder E, Thirumalai V (2002). "Cellular, synaptic and network effects of
+  neuromodulation." /Neural Networks/ 15(4-6):507-524.
+- Marder E (2012). "Neuromodulation of neuronal circuits: back to the future."
+  /Neuron/ 76(1):1-11.
+
+  The connectome defines the space of possible circuits; neuromodulation selects
+  from that space. There is no "default" circuit — the system is always in some
+  modulatory state. The STG's 30 neurons produce completely different motor
+  patterns depending on which neuromodulators are present.
+
+*** Modeling approaches
+
+- Silver RA (2010). "Neuronal arithmetic." /Nature Reviews Neurosci/ 11(7):474-489.
+
+  Neuromodulation implements both additive (threshold shift) and multiplicative
+  (gain change) operations. Shunting inhibition naturally implements division.
+
+For LIF: start with multiplicative weight scaling ($w_{eff} = w_{base} \times m$
+where $m$ is per-compartment modulatory state). If insufficient, add threshold
+modulation. If still insufficient, change time constants. Each level adds
+complexity but also explanatory power.
+
+/The key question/: can the same LIF network reproduce different behaviors
+(approach vs avoidance to the same odor) solely by changing neuromodulatory
+gain parameters? If yes, we demonstrate Marder's principle computationally. If
+no, we identify what's missing.
+
+* Ring 3: The Reconstruction Programme
+
+** Markram's Hypothesis — Has It Been Validated?
+
+*** The claim
+
+- Markram H et al. (2015). "Reconstruction and simulation of neocortical
+  microcircuitry." /Cell/ 163(2):456-492.
+
+  Sparse experimental measurements + biological interdependency rules \to dense,
+  self-consistent digital twin. From ~60 morphological types, bouton densities,
+  and connection rules, the algorithm predicted ~37M synapses whose statistics
+  matched experimental data not used in construction. Emergent network behaviors
+  (propagating waves, up-down states) matched in vivo observations.
+
+*** The critique
+
+The 2014 open letter signed by >800 neuroscientists challenged the bottom-up
+strategy. The Human Brain Project spent ~600M euros over 10 years. A 2023
+retrospective (eNeuro 10(11):ENEURO.0428-23.2023) concluded that scientific
+output, while substantial in infrastructure, did not achieve the stated goal of
+brain simulation. The BBP closed at EPFL in December 2024.
+
+*** What survived
+
+The constraint-propagation principle is sound at specific scales: synapse
+placement (Peters' rule predicts locations at 75-95% accuracy), morphological
+synthesis, single-neuron model optimization (BluePyOpt). The infrastructure
+legacy (EBRAINS, NMC portal, BluePyOpt) serves the community. The Open Brain
+Institute continues in more modest form.
+
+What was /not/ validated: emergent cognitive properties from bottom-up
+reconstruction; testable predictions subsequently confirmed experimentally in
+ways simpler models could not achieve.
+
+*** For bravli
+
+The FlyWire connectome inverts the BBP problem. Where BBP had to /infer/
+connectivity from sparse data, we have it /complete/. The constraint-propagation
+principle still applies — but to dynamics, not anatomy. Our sparse measurements
+are now electrophysiological (patch-clamp data for a few cell types), and the
+dense reconstruction target is network dynamics. The question shifts from
+"can we reconstruct the wiring?" to "can we reconstruct the computation?"
+
+** C. elegans — The Cautionary Tale
+
+*** 40 years with the complete wiring diagram
+
+- White JG et al. (1986). "The structure of the nervous system of the nematode
+  /Caenorhabditis elegans/." /Phil Trans R Soc Lond B/ 314:1-340.
+- Cook SJ et al. (2019). "Whole-animal connectomes of both /C. elegans/ sexes."
+  /Nature/ 571:63-71.
+- Witvliet D et al. (2021). "Connectomes across development reveal principles of
+  brain maturation." /Nature/ 596:257-261.
+
+  Eight isogenic worms at different ages: 43% of adult synapses are "transient"
+  (variable between individuals), 14% are developmental, 43% are stable.
+
+*** Why connectivity was not sufficient
+
+- Bargmann CI (2012). "Beyond the connectome: How neuromodulators shape neural
+  circuits." /BioEssays/ 34(6):458-465.
+
+  "The more complete the connectome of a given circuit is, the more modulation
+  must be invoked to explain its functional properties."
+
+  Five reasons the wiring diagram alone doesn't explain behavior:
+  1. Neuromodulation reconfigures effective circuits without changing anatomy
+  2. Graded vs spiking transmission — the connectome doesn't specify dynamics
+  3. Extrasynaptic signaling creates a "wireless connectome"
+  4. Proprioceptive feedback requires body-environment interaction
+  5. Parameter degeneracy: many settings produce the same behavior
+
+*** What the connectome did enable
+
+Over 30+ years: locomotion models (forward/backward crawling), chemotaxis via
+evolutionary parameter search on connectome-extracted circuits, the OpenWorm
+digital twin (sinusoidal crawling + chemotaxis), network motif analysis.
+
+What it has /not/ enabled: predicting the effect of novel neuromodulatory states,
+predicting complex behavioral repertoires from structure alone.
+
+*** The lesson for Drosophila
+
+The FlyWire connectome is 460x larger than C. elegans and the behavioral
+repertoire far richer. The C. elegans experience sets clear expectations: the
+connectome is necessary, not sufficient. Dynamics, neuromodulation, and
+sensorimotor loops must be added. We should plan for this from the start, not
+discover it after 30 years.
+
+** MICrONS and Mammalian Connectomics
+
+- MICrONS Consortium (2025). "Functional connectomics spanning multiple areas
+  of mouse visual cortex." /Nature/.
+
+  The cubic millimeter: 200,000+ cells, 500M+ synapses, 4 km of axons,
+  co-registered with calcium imaging of ~75,000 neurons. 1.6 petabytes of data.
+
+  /Key finding/: *neurons with similar response properties preferentially
+  connect* ("like-to-like" wiring). This emerges independently within and across
+  brain areas and layers. The same pattern appears in artificial neural networks
+  trained on visual tasks.
+
+  /Bravli can test this/: does /Drosophila/ visual system wiring follow
+  "like-to-like"? Stratify connectivity by cell type using the composition and
+  connectivity modules.
+
+** The Simulation-vs-Understanding Debate
+
+*** Could a neuroscientist understand a microprocessor?
+
+- Jonas E, Kording KP (2017). "Could a Neuroscientist Understand a
+  Microprocessor?" /PLOS Comp Biol/ 13(1):e1005268.
+
+  Applied standard neuroscience methods (lesion studies, tuning curves,
+  dimensionality reduction) to a transistor-level simulation of the MOS 6502
+  processor (3,510 transistors). All methods produced plausible-looking
+  "neuroscience results" that completely failed to capture how the processor
+  works. /Complete data is not sufficient for understanding — the analysis
+  paradigm must also be right./
+
+*** Is coding a relevant metaphor?
+
+- Brette R (2019). "Is coding a relevant metaphor for the brain?" /Behavioral
+  and Brain Sciences/ 42:e215.
+
+  Neural codes are observer-dependent descriptions, not causal explanations. A
+  spike rate that "encodes" stimulus orientation has meaning only relative to the
+  experimenter's stimulus set. The brain must build meaning from sensorimotor
+  contingencies, not "decode a code."
+
+*** A connectome is not enough
+
+- Scheffer LK, Meinertzhagen IA (2021). "A connectome is not enough — what is
+  still needed to understand the brain of /Drosophila/?" /J Exp Biol/
+  224(21):jeb242740.
+
+  Explicitly lists what the connectome cannot tell: gap junctions, neuromodulation,
+  receptor types, intrinsic excitability, developmental rules, behavioral context.
+
+*** What does "validated" mean?
+
+Proposed criteria for a neuroscience digital twin (synthesized):
+1. *Reproduction*: reproduces known observations not used in fitting
+2. *Prediction*: makes novel, testable predictions subsequently confirmed
+3. *Intervention*: simulated lesions match experimental lesion data
+4. *Generalization*: works across conditions without re-fitting
+5. *Falsifiability*: there exist outcomes that would prove it wrong
+
+No neuroscience digital twin has fully satisfied all five for any nontrivial
+circuit. /This is the bar we should aim for with the mushroom body./
+
+** Cross-Species Comparative Connectomics
+
+*** Conserved circuit motifs
+
+- Barsotti E et al. (2021). "Neural architectures in the light of comparative
+  connectomics." /Curr Opin Neurobiol/ 71:139-149.
+
+  Feedforward inhibition, recurrent excitation, winner-take-all, convergent
+  synaptic motifs — these appear across C. elegans, /Drosophila/, and mouse.
+  Believed to serve as computational primitives.
+
+*** Convergent evolution
+
+Do similar computations require similar wiring? The olfactory system appears to
+be a case of convergent evolution: similar circuit architecture (sparse random
+projection \to associative layer) in insect mushroom body and mammalian piriform
+cortex.
+
+*** What bravli enables
+
+The pathway analysis tools (convergence/divergence, NT pathway breakdown) can
+compute motif frequencies across neuropils and compare against published C.
+elegans and MICrONS distributions. This is a direct contribution to comparative
+connectomics — and a natural bridge to the =elegans/= module when we build it.
+
+** Digital Twins as Scientific Instruments
+
+- Einevoll GT et al. (2019). "The Scientific Case for Brain Simulations at
+  Exascale." /Neuron/ 102(4):735-744.
+
+  Simulations at sufficient scale become /in silico/ experiments: make
+  interventions impossible or unethical in vivo and observe consequences.
+
+- Winsberg E (2010). /Science in the Age of Computer Simulation/. U Chicago Press.
+
+  Simulation lies between theory and experiment — it inherits ancestry from both.
+  The philosophical novelty is this dual character. For brain simulation: is a
+  detailed reconstruction a form of theory (encoding understanding) or experiment
+  (probing an artifact we don't fully understand)? Both.
+
+* What We Can Investigate Now
+
+Given what =bravli= currently provides:
+
+| Module         | Capability                                     |
+|----------------+------------------------------------------------|
+| =connectivity= | Neuropil matrices, per-NT stratification, pathways |
+| =composition=  | Cell type distributions, NT profiles           |
+| =models=       | LIF + graded models, CellModelDB               |
+| =simulation=   | Pure-numpy LIF, heterogeneous params, delays   |
+| =analysis=     | Firing rates, rasters, E/I balance, pop rate   |
+| =explore=      | Mushroom body deep dive                        |
+| =portal=       | Interactive five-tab exploration                |
+
+** Investigations requiring no new code
+
+1. *Synapse threshold sensitivity*: vary the $\geq 5$ threshold from 1 to 20 and
+   measure how network topology metrics change (degree distribution, clustering,
+   path length, modularity). How do simulation dynamics change?
+
+2. *Cell type granularity experiment*: simulate the MB circuit with uniform Shiu
+   parameters, super_class-level models, and cell_class-level models. Measure
+   whether emergent activity statistics (sparsity, oscillation, E/I balance)
+   differ. Tests the BICCN lesson at /Drosophila/ scale.
+
+3. *Convergence/divergence scaling*: compute distributions across neuropils.
+   Log-normal? Power-law? Compare with published C. elegans distributions.
+
+** Investigations requiring modest additions
+
+4. *Brunel phase diagram validation*: reproduce the SR/SI/AR/AI phase diagram
+   with random connectivity (proves simulator correctness), then swap in FlyWire
+   connectivity and identify which regime the fly brain occupies. /Publishable./
+
+5. *Mushroom body microcircuit*: extract ~2500 KCs, ~35 MBONs, ~130 DANs from
+   FlyWire. Build circuit. Simulate with Poisson input. Measure KC sparseness.
+   Does the ~5-10% sparseness observed experimentally emerge from the wiring?
+
+6. *Paradoxical response test (ISN)*: stimulate GABAergic neurons /in silico/
+   and measure whether network inhibition decreases. Tests whether the fly brain
+   operates in the inhibition-stabilized regime.
+
+** Investigations requiring new modules
+
+7. *Three-factor STDP in mushroom body*: implement dopamine-gated KC\to MBON
+   depression. Simulate single-trial olfactory conditioning. Validate against
+   Hige et al. 2015 and Handler et al. 2019.
+
+8. *Neuromodulatory state switching*: multiplicative gain modulation per
+   compartment. Show that the same MB circuit produces approach vs avoidance
+   depending on DAN state. Demonstrates Marder's principle computationally.
+
+9. *Stochastic synapses*: per-synapse Bernoulli failure + intrinsic noise
+   current. Measure how noise changes network dynamics. Test for stochastic
+   resonance in sensory circuits.
+
+10. *Conductance-based comparison*: implement AdEx (adaptive exponential)
+    alongside LIF. Simulate MB microcircuit with both. Measure when predictions
+    diverge. Tests the Zhang et al. topology-dominates hypothesis for a
+    timing-dependent circuit.
+
+** The big questions
+
+Underlying all of these investigations are three questions that define the
+research programme:
+
+#+begin_quote
+*Q1*: /Is the connectome sufficient to predict dynamics?/
+
+The Zhang et al. result says topology dominates for spontaneous activity. But
+does it dominate for /learned/ behavior? For /state-dependent/ behavior? For
+/timing-sensitive/ computation? The MB microcircuit is where this breaks.
+#+end_quote
+
+#+begin_quote
+*Q2*: /What is the minimal model that captures function?/
+
+LIF is the simplest model. Three-factor STDP is the simplest learning rule.
+Multiplicative gain is the simplest neuromodulation. At each level, we can ask:
+does adding complexity change the qualitative prediction? If not, the simpler
+model suffices. If yes, we've found the boundary of the approximation.
+#+end_quote
+
+#+begin_quote
+*Q3*: /What does a validated digital twin of a neural circuit look like?/
+
+No one has achieved this for any nontrivial circuit. The MB is small enough,
+well-characterized enough, and experimentally accessible enough to be the first.
+The five validation criteria (reproduction, prediction, intervention,
+generalization, falsifiability) are our checklist. We should design every
+simulation with explicit falsification conditions.
+#+end_quote
+
+* Recommended Sequence
+
+Based on scientific leverage per unit of implementation effort:
+
+| Step | Investigation                              | What it tests                              |
+|------+--------------------------------------------+--------------------------------------------|
+|    1 | Wire real data through portal               | Plumbing — makes the instrument work       |
+|    2 | Brunel phase diagram + FlyWire regime       | Simulator validation + novel finding       |
+|    3 | MB microcircuit extraction + simulation     | Does sparseness emerge from wiring?        |
+|    4 | Three-factor STDP in MB                     | Can the circuit learn from structure alone? |
+|    5 | Neuromodulatory state switching             | Marder's principle, computationally        |
+|    6 | LIF vs AdEx comparison                      | Where does topology stop dominating?       |
+|    7 | Stochastic synapses + noise                 | Is the fly brain in a balanced regime?     |
+|    8 | Comparative motif analysis                  | Bridge to C. elegans                       |
+
+Each step produces a lesson in =codev/=, a module in =bravli/=, and — if the
+result is surprising — a paper.
+
+* Bibliography
+
+Full citations are given inline. Key papers organized by theme:
+
+** Connectome
+- Dorkenwald et al. 2024. /Nature/ 634. (FlyWire whole-brain)
+- Schlegel et al. 2024. /Nature/ 634. (Cell type annotation)
+- Lin et al. 2024. /Nature/ 634. (Network statistics)
+- Shiu et al. 2024. /Nature/ 634. (LIF simulation)
+- Zhang et al. 2024. /iScience/ 27(5):109863. (Topology dominates)
+- Winding et al. 2023. /Science/ 379:eadd9330. (Larval connectome)
+- Pospisil et al. 2024. /Nature/ 634. (Effectome)
+
+** Methodology
+- Brunel 2000. /J Comp Neurosci/ 8(3):183-208. (LIF phase diagram)
+- van Vreeswijk & Sompolinsky 1996, 1998. /Science/, /Neural Comp/. (Balanced networks)
+- Bi & Poo 1998. /J Neurosci/ 18(24):10464. (STDP)
+- Izhikevich 2007. /Cereb Cortex/ 17(10):2443. (Three-factor rule)
+- Fremaux & Gerstner 2016. /Front Neural Circuits/ 9:85. (Three-factor theory)
+- Marder & Thirumalai 2002. /Neural Networks/ 15(4-6):507. (Neuromodulation)
+
+** Mushroom body
+- Aso et al. 2014. /eLife/ 3:e04577. (MB architecture)
+- Aso & Rubin 2016. /eLife/ 5:e16135. (DAN write/update rules)
+- Hige et al. 2015. /Neuron/ 88(5):985. (Heterosynaptic plasticity)
+- Handler et al. 2019. /Cell/ 178(1):60. (Compartment-specific timing rules)
+- Modi et al. 2020. /Annu Rev Neurosci/ 43:465. (MB review)
+
+** Reconstruction programme
+- Markram et al. 2015. /Cell/ 163(2):456. (BBP NMC)
+- White et al. 1986. /Phil Trans R Soc Lond B/ 314:1. (C. elegans connectome)
+- Bargmann 2012. /BioEssays/ 34(6):458. (Beyond the connectome)
+- MICrONS 2025. /Nature/. (Mouse V1 cubic millimeter)
+- Jonas & Kording 2017. /PLOS Comp Biol/ 13(1):e1005268. (Microprocessor test)
+- Brette 2019. /Behav Brain Sci/ 42:e215. (Coding metaphor)
+- Scheffer & Meinertzhagen 2021. /J Exp Biol/ 224(21):jeb242740. (Not enough)
+
+** Noise and stochastic processes
+- Faisal et al. 2008. /Nature Reviews Neurosci/ 9:292. (Noise review)
+- Longtin 1993. /J Stat Phys/ 70(1):309. (Stochastic resonance)
+- Renart et al. 2010. /Science/ 327(5965):587. (Active decorrelation)
+
+** Cross-species
+- Barsotti et al. 2021. /Curr Opin Neurobiol/ 71:139. (Comparative connectomics)
+- Beniaguev et al. 2021. /Neuron/ 109(17):2727. (Single neuron as deep network)
+- Cook et al. 2019. /Nature/ 571:63. (C. elegans updated)
+- Witvliet et al. 2021. /Nature/ 596:257. (C. elegans development)
+
+* Local Variables                                                :noexport:
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

@@ -1,0 +1,319 @@
+#+title: Session: The Fly Brain Sprint
+#+subtitle: From BBP archaeology to a living digital twin in two nights
+#+date: <2026-02-18 Wed>–<2026-02-19 Thu>
+#+author: mu2tau + Claude
+
+* The Arc
+
+Two nights. Twelve literate lessons. Six pipeline phases. 160 tests. One
+interactive portal where you can stare at 139,255 neurons and feel, viscerally,
+how much you don't understand.
+
+This session began as archaeology — digging through the =ExploreBlueBrainAtlas=
+repo, salvaging scientific logic from institutional rubble — and ended with a
+running simulation of the /Drosophila/ whole-brain connectome on a laptop.
+
+The throughline: *every answer we built raised better questions*.
+
+* Night One — The Pivot
+
+** Excavation
+
+The starting point was =/work/bbp/work/MMB/atlas/BBA/ExploreBlueBrainAtlas/=, a
+half-finished repo containing:
+
+- =KnowledgeBench= — a filesystem-backed dataset registry with lazy evaluation
+- =BrainParcellation= — recursive domain model for the AIBS mouse brain ontology
+- Reverse-engineered documentation of the BBP cell atlas pipeline
+- Composition engine wrapping =atlas-densities=
+
+All of it tangled in dead infrastructure: NEXUS URIs returning 404, GPFS paths
+pointing nowhere, Slurm job scripts for a cluster that no longer exists.
+
+** The insight
+
+The scientific logic is timeless. The cell atlas pipeline — sparse measurements
+propagated through constraint models to reconstruct dense maps — doesn't care
+whether the brain is a mouse cortical column or a fly optic lobe. What /does/
+care is the infrastructure. And for the fly brain, there is no infrastructure
+barrier: FlyWire published /everything/.
+
+139,255 neurons. 54.5 million synapses. 8,453 cell types. Neurotransmitter
+predictions. All publicly available, all downloadable without authentication,
+all fitting on a laptop with room to spare.
+
+The BBP spent a decade building what the fly community gives away for free. The
+intellectual challenge — understanding the brain through reconstruction — remains
+identical.
+
+** Foundation (Phases 0–2)
+
+In a single session:
+
+- Downloaded FlyWire annotations (32 MB), Zenodo skeletons (5.1 GB), synapse
+  data (852 MB feather file)
+- Wrote lessons 00–06: datasets, parcellation, composition, factology,
+  visualization, mushroom body deep dive, atlas rendering
+- Built 10 interactive 3D HTML visualizations (whole-brain atlas, neuron
+  morphologies, MB skeleton overlays)
+- Planned the full six-phase roadmap in lesson 07
+- Initialized the git repository with 63 passing tests
+
+The foundation modules (=bench=, =parcellation=, =composition=, =factology=,
+=viz=, =explore=, =atlas=) gave us a working connectome explorer — you could
+query neurons, group by neuropil, render 3D meshes, extract structured
+measurements. But it was all /static/. Anatomy without physiology. Structure
+without dynamics.
+
+* Night Two — From Wiring to Firing
+
+** Phase 1: Connectivity
+
+The 852 MB feather file contains 16.8 million edges between 138K neurons across
+79 neuropils, with synapse counts and six neurotransmitter probability columns.
+Three operations transform raw edges into analysable connectivity:
+
+1. *Threshold* at \geq 5 synapses (Dorkenwald convention) — discards 80% of edges
+2. *Assign dominant NT* — argmax over the six probability columns
+3. *Aggregate by pair* — collapse multi-neuropil edges into single weights
+
+The threshold is pragmatic, not biological. We throw away millions of weak
+connections. Are they noise? Or are they the substrate of volume transmission,
+slow learning, context-dependent gating? The portal will make you stare at this
+question.
+
+22 new tests. 85 total.
+
+** Phase 2: Synaptic Physiology
+
+Every neurotransmitter needs biophysical parameters: reversal potential,
+conductance rise/fall times, receptor kinetics. We built a =SynapseModel=
+database with six entries:
+
+| NT            | E_rev (mV) | tau_rise (ms) | tau_decay (ms) | Confidence |
+|---------------+------------+---------------+----------------+------------|
+| Acetylcholine |          0 |           0.2 |            1.1 | HIGH       |
+| GABA          |        −75 |           0.5 |            5.0 | HIGH       |
+| Glutamate     |        −75 |           0.5 |            5.0 | LOW        |
+| Dopamine      |        −40 |           2.0 |           20.0 | MEDIUM     |
+| Serotonin     |        −40 |           2.0 |           20.0 | MEDIUM     |
+| Octopamine    |        −40 |           2.0 |           20.0 | MEDIUM     |
+
+The confidence annotations are honest: glutamate's GluCl channel kinetics in
+/Drosophila/ are inferred by analogy from GABA_A. The aminergic transmitters are
+modulatory — they change gain, not membrane potential — and our sign-zero model
+is a placeholder. 20 new tests. 105 total.
+
+** Phase 3: Cell Electrical Models
+
+Twelve registered models in a =CellModelDB= registry, resolved by cell_class >
+super_class > default priority:
+
+- *Spiking* (LIF): default, Shiu-uniform, projection neuron, Kenyon cell,
+  fast/slow motoneuron, clock neuron, central/motor/sensory defaults
+- *Graded*: optic lobe neurons, photoreceptors
+
+The graded neuron trick: set threshold to +100 mV (unreachable). The neuron
+becomes a leaky integrator whose steady-state voltage encodes input strength
+continuously. Following Stolz et al. 2021 — but a lie nonetheless. A real
+graded neuron has voltage-dependent potassium channels shaping a dynamic
+transfer function that adapts moment to moment. Ours is a resistor.
+
+21 new tests. 126 total.
+
+** Phase 4: The Simulator
+
+The hardest decision: Brian2 or bare numpy?
+
+Shiu et al. (2024) used Brian2 with C++ codegen to simulate all 127K spiking
+neurons. ~5 minutes per second of biological time. Brian2 handles the hard
+parts — event-driven spike delivery, exact integration between spikes,
+heterogeneous delays.
+
+We chose numpy. The Feynman imperative: /what I cannot create, I do not
+understand/. If we can't write a 30-line Euler integrator and understand every
+term, we have no business claiming we understand the simulation.
+
+The core loop:
+
+#+begin_example
+dv/dt = (-(v - v_rest) + g) / tau_m          # membrane dynamics
+dg/dt = -g / tau_syn                          # synaptic decay
+if v >= v_thresh: spike, reset, enter refractory
+#+end_example
+
+Three bugs taught us more than the working code:
+
+1. *Spike propagation failure*: weight 3.0 mV was too weak. Steady-state
+   analysis: $g_{ss} = w \cdot r \cdot \tau_{syn} = 3.0 \times 0.175 \times 5.0
+   = 2.625$ mV, so $V_{ss} = -52 + 2.625 = -49.375 < -45$ (threshold). Increased
+   to 10.0 mV — now $V_{ss} \approx -43.25 > -45$. The bug was a lesson in
+   gain analysis.
+
+2. *Delay buffer corruption*: the original code cleared the future buffer slot
+   every timestep, destroying pending spikes. Fix: clear /after/ reading, not
+   on write. A classic concurrent-access pattern surfacing in sequential code.
+
+3. *Division by zero in E/I balance*: when no inhibitory input exists, the ratio
+   blows up. Wrapped in =np.errstate=. The real question: /should/ E/I balance
+   even be defined when one side is absent?
+
+Zhang et al. (2024, iScience) provided the intellectual anchor: LIF, Izhikevich,
+and sigmoid models produce the /same activation patterns/ on the FlyWire
+connectome. Network topology dominates. This is profound — and suspicious. /When/
+does the neuron model start to matter?
+
+23 new tests. 149 total.
+
+** Phase 5: The Portal
+
+#+begin_quote
+/"alright, tonight is gonna be amazing. let us make the digital twin portal."/
+— mu2tau
+#+end_quote
+
+Five tabs mirroring the BBP SSCx Portal's methodology-as-navigation pattern:
+
+1. *Atlas* — 139K neurons, 78 neuropils, region selector
+2. *Composition* — cell type distributions, NT pie chart, group-by faceting
+3. *Connectivity* — synapse histograms, NT breakdown, top pathways
+4. *Physiology* — synapse model database, E/I weight distributions
+5. *Simulate* — stimulus controls, spike raster, population rate, voltage traces
+
+But the critical design element isn't any of these. It's the /marginalia/.
+
+*** The pedagogical turn
+
+Halfway through planning, a course correction:
+
+#+begin_quote
+/"no, need for this prototype. in the lessons, we should have TODO lists, either
+explicit, or embedded implicitly in the narrative --- for example this neural
+membrane voltage equation that any simulator would have to solve is like an
+onion --- with multiple levels of detail --- you can teach several core
+principles of spatiotemporal evolution with this system. Remember, our
+pedagogical approach should leave the audience asking more questions, not
+returning with their questions answered"/
+— mu2tau
+#+end_quote
+
+This reshaped everything. Every tab now carries an italic provocation — not
+explaining, but /destabilizing/:
+
+- Composition: /"8,453 cell types — but how many are functionally distinct?
+  The classification is morphological..."/
+- Connectivity: /"54.5 million synapses, but we threshold at \geq 5 and
+  discard 80% of edges. The weak connections we throw away — are they noise?"/
+- Physiology: /"Every synapse gets the same $W_{syn} = 0.275$ mV per contact...
+  Our model is amnesic. It has the connectome's anatomy but none of its
+  biography."/
+- Simulate: /"You are watching 100 differential equations evolve in time...
+  Where is the phase transition? Is it sharp or gradual?"/
+
+And a full section — "What the Portal Hides" — cataloguing five dimensions of
+reality our model erases: spatial structure, temporal dynamics, neuromodulation,
+learning, noise. Each one a research programme.
+
+The right reaction to the portal is not "I understand the fly brain now." It's
+"I see five things I need to investigate."
+
+11 new tests. 160 total. Panel framework, dark-themed, runs locally with
+=panel serve=.
+
+* What We Built
+
+| Asset                   | Count | Description                                  |
+|-------------------------+-------+----------------------------------------------|
+| Literate lessons        |    12 | Org files teaching science /and/ code        |
+| Python modules          |    12 | =bench= through =portal=                    |
+| Tests                   |   160 | All passing (2 skipped for missing data)     |
+| 3D visualizations       |    10 | Interactive HTML (navis + plotly)             |
+| Interactive portal      |     1 | Five-tab Panel app                           |
+| Git commits             |     6 | One per pipeline phase                       |
+
+** The pipeline
+
+#+begin_example
+  FlyWire TSV ──▶ parcellation ──▶ composition ──▶ factology
+       │                                              │
+       ▼                                              ▼
+  Zenodo feather ──▶ connectivity ──▶ physiology ──▶ models
+       │                                              │
+       ▼                                              ▼
+  threshold ──▶ assign_NT ──▶ synapse_models ──▶ build_circuit
+       │                                              │
+       ▼                                              ▼
+  weights ──▶ Circuit ──▶ simulate() ──▶ analysis ──▶ portal
+#+end_example
+
+* What We Learned
+
+** Technical
+
+- *Circular delay buffers are tricky*. The read-before-clear pattern matters
+  even in single-threaded code when the buffer represents future state.
+- *Gain analysis catches bugs*. When a test fails, compute the steady-state
+  analytically before tweaking parameters.
+- *Python environment fragmentation is real*. =python= (pyenv) and =python3=
+  (system) had different site-packages. Tests need to use the same interpreter
+  that has the dependencies.
+- *Network topology dominates neuron model choice* (Zhang 2024). For
+  coarse-grained questions, LIF suffices. For timing-dependent computations,
+  it may not.
+
+** Methodological
+
+- *The BBP pipeline inverts for complete connectomes*. Where BBP reconstructed
+  anatomy from sparse data (years of work), FlyWire gives anatomy for free.
+  The frontier shifts to dynamics, learning, and function.
+- *Literate programming scales*. Twelve lessons, each simultaneously teaching
+  and specifying, each tangling into working, tested code. The org files are
+  the source of truth; the Python files are derived.
+- *Provocation over explanation*. A portal that answers questions is a textbook.
+  A portal that /generates/ questions is a laboratory. The marginalia matter
+  more than the charts.
+
+** Philosophical
+
+The Feynman imperative — "what I cannot create, I do not understand" — guided
+every decision. We wrote the LIF integrator by hand instead of calling Brian2.
+We built the portal instead of using an existing brain viewer. The artifacts
+are crude compared to their professional counterparts, but /we understand every
+line/. That understanding is the product. The code is the byproduct.
+
+* What's Next
+
+The roadmap shows Phase 6 as "WebGPU visualization / MayaPortal integration."
+But the portal's marginalia point to richer directions:
+
+- *Conductance-based models*: swap LIF for AdEx or Hodgkin-Huxley in the optic
+  lobe. When does the neuron model start to matter?
+- *Spike-timing-dependent plasticity*: add STDP to mushroom body synapses.
+  Does the network learn? Does it forget?
+- *Neuromodulation*: implement dopaminergic gain modulation. Can we reproduce
+  the state-dependent switching between sleep and wake activity patterns?
+- *Stochastic synapses*: add per-synapse release failure. Does the E/I balance
+  change qualitatively?
+- *Cable equation*: we have the skeletons. A multicompartment model of a single
+  neuron class would reveal what the point-neuron approximation destroys.
+
+Each of these is a lesson waiting to be written. The portal is not the
+destination — it's the map of where to go next.
+
+* References
+
+- Dorkenwald S et al. (2024). Neuronal wiring diagram of an adult brain. /Nature/ 634.
+- Shiu PK et al. (2024). A leaky integrate-and-fire computational model based on
+  the connectome of the entire adult /Drosophila/ brain. /bioRxiv/.
+- Zhang Z et al. (2024). Network structure determines the computations performed
+  in brain-inspired model. /iScience/ 27(5):109863.
+- Stolz T et al. (2021). Graded transmission in /Drosophila/ visual neurons.
+  Poster, Computational and Systems Neuroscience (Cosyne).
+- Markram H et al. (2015). Reconstruction and simulation of neocortical
+  microcircuitry. /Cell/ 163(2):456-492.
+- Lazar AA et al. (2021). FlyBrainLab. /eLife/ 10:e62362.
+
+* Local Variables                                                :noexport:
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:
