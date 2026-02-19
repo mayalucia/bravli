@@ -10,6 +10,7 @@ Subpackages:
     factology     Structured scientific measurements
     connectivity  Connectome edge list analysis and neuropil matrices
     physiology    Synapse models: NT-to-biophysics parameter database
+    models        Point neuron models (LIF, graded) per cell type
     viz           3D visualization via navis
 """
 

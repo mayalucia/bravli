@@ -1,0 +1,919 @@
+#+title: Lesson 10 — Cell Electrical Models
+#+subtitle: From connectome nodes to point neurons that compute
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+At the Blue Brain Project, stage 4 of the pipeline fitted electrical models (e-models)
+to patch-clamp recordings: 11 electrical types (e-types), each with optimized ion
+channel conductances, producing 212 morpho-electrical types (me-types). Months of
+computation went into multi-objective optimization against step-current injection
+protocols. The resulting models were detailed Hodgkin-Huxley multicompartment neurons.
+
+For the fly brain, we take a different path. The /complete/ connectome means we can
+simulate the entire 139K-neuron network — but only if each neuron is cheap to compute.
+Point neurons (LIF, AdEx) are the right abstraction for this scale. And a remarkable
+result from network theory validates this choice: Shiu et al. (2024) showed that
+network structure dominates over single-neuron dynamics — LIF neurons with identical
+parameters, wired according to the FlyWire connectome, correctly predict sensorimotor
+activation patterns. A separate study (arXiv:2404.17128) confirmed that LIF vs
+Izhikevich vs other models produce similar activation patterns on the same connectome.
+
+This lesson builds a =CellModel= hierarchy — LIF and graded-potential point neurons
+— with a parameter database that spans three levels of detail:
+
+1. *Uniform (Shiu)*: All neurons identical. One parameter set for the whole brain.
+2. *Class-aware*: Different parameters for broad classes (projection neurons, Kenyon
+   cells, motoneurons, photoreceptors, clock neurons).
+3. *Graded-aware*: Optic lobe and other non-spiking neurons use a graded model
+   (high-threshold LIF with continuous membrane potential output).
+
+** The graded-potential problem
+
+An elephant in every fly brain simulation: roughly half the neurons (especially in
+the optic lobe) are non-spiking. Lamina monopolar cells, medulla interneurons, and
+many local interneurons transmit information through graded membrane potential changes,
+not action potentials. The Shiu model ignores this entirely — all neurons spike.
+
+We handle graded neurons by setting the threshold unreachably high (+100 mV) in the
+same LIF framework. The neuron operates in subthreshold mode: its membrane potential
+varies continuously in response to synaptic input, and this potential drives graded
+synaptic output to postsynaptic partners. This is the approach of Stolz et al. (2021)
+and is computationally free — no new simulator needed.
+
+** Learning Objectives
+
+- [ ] Understand the LIF model and its parameters
+- [ ] Implement =LIFParams= and =GradedParams= as frozen dataclasses
+- [ ] Build a parameter database with cell-class-specific values
+- [ ] Assign cell models to FlyWire neurons based on annotations
+- [ ] Understand the tension between model simplicity and biological accuracy
+
+** File Map
+
+| File                              | Role                                      |
+|-----------------------------------+-------------------------------------------|
+| =bravli/models/__init__.py=      | Subpackage exports                        |
+| =bravli/models/cell_models.py=   | CellModel hierarchy + parameter DB        |
+| =bravli/models/assign.py=        | Assign models to neurons from annotations |
+| =tests/test_cell_models.py=      | Tests with synthetic data                 |
+
+* The Science
+
+** The LIF neuron
+
+The leaky integrate-and-fire neuron is the simplest model that captures spike
+generation:
+
+$$\tau_m \frac{dV}{dt} = -(V - V_{rest}) + R_m \cdot I_{syn}(t)$$
+
+When $V$ reaches $V_{thresh}$, a spike is emitted, $V$ resets to $V_{reset}$, and
+the neuron is refractory for $T_{ref}$ milliseconds.
+
+For fly brain simulation, the key parameters are:
+
+#+name: tbl:lif-params
+| Parameter   | Symbol      | Shiu et al.     | FlyBrainLab    | Measured range |
+|-------------+-------------+-----------------+----------------+----------------|
+| Resting V   | V_rest      | -52 mV          | -70 mV         | -48 to -68 mV |
+| Threshold V | V_thresh    | -45 mV          | -45 mV         | ~-45 mV        |
+| Reset V     | V_reset     | -52 mV          | -55 mV         | ---            |
+| Membrane τ  | tau_m       | 20 ms           | 16 ms          | 4-55 ms        |
+| Refractory  | T_ref       | 2.2 ms          | 2.0 ms         | ---            |
+| Capacitance | C_m         | 2 µF/cm²        | scales w/ size | 3-64 pF        |
+| Input R     | R_input     | ---             | ---            | 150-1360 MΩ    |
+
+Note the V_rest discrepancy: Shiu uses -52 mV (close to measured Drosophila values
+but conflates rest and reset), while FlyBrainLab uses -70 mV (mammalian convention).
+The true resting potential for most Drosophila central neurons is -55 to -60 mV
+(Gouwens & Wilson 2009).
+
+** Cell-type heterogeneity
+
+The FlyWire annotation table gives us =super_class=, =cell_class=, and =cell_type=
+for each neuron. We can use these to assign differentiated parameters:
+
+#+name: tbl:cell-class-params
+| Cell class          | V_rest (mV) | R_input (MΩ) | C_m (pF)  | tau_m (ms)  | Mode    | Source                  |
+|---------------------+-------------+--------------+-----------+-------------+---------+-------------------------|
+| Projection neurons  |         -58 |          600 |       8.0 |        20.0 | Spiking | Gouwens & Wilson 2009   |
+| Kenyon cells        |         -55 |         1360 |       3.6 |         5.0 | Spiking | Su & O'Dowd 2003       |
+| Motoneurons (fast)  |         -68 |          150 |      15.0 |        10.0 | Spiking | Azevedo et al. 2020    |
+| Motoneurons (slow)  |         -48 |          700 |      10.0 |        20.0 | Spiking | Azevedo et al. 2020    |
+| Clock neurons (LNv) |         -50 |          305 |      12.0 |         4.0 | Spiking | Sheeba et al. 2008     |
+| Optic lobe interns  |         -55 |          500 |       5.0 |        10.0 | Graded  | estimated               |
+| Photoreceptors      |         -60 |          500 |      50.0 |         8.0 | Graded  | Niven et al. 2003      |
+| Default (central)   |         -55 |          500 |       8.0 |        20.0 | Spiking | Shiu-inspired           |
+
+These are the best available numbers. Most are HIGH or MEDIUM confidence for the
+measured cell types, but the "default" and "optic lobe" rows are LOW — educated
+guesses filling the gap.
+
+* Implementation
+
+** Models subpackage init
+
+#+begin_src python :tangle ../bravli/models/__init__.py
+"""models — Point neuron models for Drosophila brain simulation.
+
+Provides LIF and graded-potential neuron models with a parameter database
+spanning uniform (Shiu), class-aware, and graded-aware configurations.
+
+References:
+    Shiu et al. 2024 — Whole-brain LIF (Nature 634:210-219)
+    Gouwens & Wilson 2009 — PN passive properties (J Neurosci 29:6239)
+    Su & O'Dowd 2003 — KC properties
+    Azevedo et al. 2020 — Motoneuron properties
+"""
+
+from .cell_models import (
+    LIFParams,
+    GradedParams,
+    CellModelDB,
+    CELL_MODEL_DB,
+    get_cell_params,
+    list_cell_models,
+)
+from .assign import (
+    assign_cell_models,
+    population_summary,
+)
+#+end_src
+
+** cell_models.py — Parameter database
+
+#+begin_src python :tangle ../bravli/models/cell_models.py
+"""Point neuron model parameters for Drosophila cell types.
+
+Two neuron types:
+  - LIFParams: leaky integrate-and-fire (spiking neurons)
+  - GradedParams: subthreshold LIF (non-spiking, graded potential)
+
+Both are frozen dataclasses with confidence annotations.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+HIGH = "HIGH"
+MEDIUM = "MEDIUM"
+LOW = "LOW"
+
+
+@dataclass(frozen=True)
+class LIFParams:
+    """Leaky integrate-and-fire neuron parameters.
+
+    Parameters
+    ----------
+    name : str
+        Model name (e.g., "kenyon_cell").
+    v_rest : float
+        Resting membrane potential (mV).
+    v_thresh : float
+        Spike threshold (mV).
+    v_reset : float
+        Post-spike reset potential (mV).
+    tau_m : float
+        Membrane time constant (ms).
+    t_ref : float
+        Refractory period (ms).
+    c_m : float
+        Membrane capacitance (pF).
+    r_input : float
+        Input resistance (MOhm).
+    confidence : str
+        Evidence strength.
+    source : str
+        Key reference(s).
+    notes : str
+        Caveats or context.
+    """
+    name: str
+    v_rest: float = -55.0
+    v_thresh: float = -45.0
+    v_reset: float = -55.0
+    tau_m: float = 20.0
+    t_ref: float = 2.0
+    c_m: float = 8.0
+    r_input: float = 500.0
+    confidence: str = LOW
+    source: str = ""
+    notes: str = ""
+
+    @property
+    def g_leak(self):
+        """Leak conductance (nS) = 1000 / R_input (MOhm)."""
+        return 1000.0 / self.r_input if self.r_input > 0 else 0.0
+
+    @property
+    def mode(self):
+        return "spiking"
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "mode": self.mode,
+            "v_rest_mV": self.v_rest,
+            "v_thresh_mV": self.v_thresh,
+            "v_reset_mV": self.v_reset,
+            "tau_m_ms": self.tau_m,
+            "t_ref_ms": self.t_ref,
+            "c_m_pF": self.c_m,
+            "r_input_MOhm": self.r_input,
+            "g_leak_nS": self.g_leak,
+            "confidence": self.confidence,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class GradedParams:
+    """Graded-potential (non-spiking) neuron parameters.
+
+    Same equations as LIF but with threshold set unreachably high.
+    The membrane potential is the output signal — it drives graded
+    synaptic transmission to postsynaptic partners.
+
+    Parameters
+    ----------
+    name : str
+        Model name (e.g., "optic_lobe_interneuron").
+    v_rest : float
+        Resting membrane potential (mV).
+    v_thresh : float
+        Unreachable threshold (mV). Set to +100 mV by default.
+    tau_m : float
+        Membrane time constant (ms).
+    c_m : float
+        Membrane capacitance (pF).
+    r_input : float
+        Input resistance (MOhm).
+    v_range : float
+        Operating range of membrane potential (mV). Graded neurons
+        typically operate over ~15 mV around rest.
+    confidence : str
+        Evidence strength.
+    source : str
+        Key reference(s).
+    notes : str
+        Caveats or context.
+    """
+    name: str
+    v_rest: float = -55.0
+    v_thresh: float = 100.0    # unreachable → never spikes
+    tau_m: float = 10.0
+    c_m: float = 5.0
+    r_input: float = 500.0
+    v_range: float = 15.0
+    confidence: str = LOW
+    source: str = ""
+    notes: str = ""
+
+    @property
+    def g_leak(self):
+        return 1000.0 / self.r_input if self.r_input > 0 else 0.0
+
+    @property
+    def mode(self):
+        return "graded"
+
+    @property
+    def v_reset(self):
+        """Graded neurons don't reset, but kept for API compatibility."""
+        return self.v_rest
+
+    def to_dict(self):
+        return {
+            "name": self.name,
+            "mode": self.mode,
+            "v_rest_mV": self.v_rest,
+            "v_thresh_mV": self.v_thresh,
+            "tau_m_ms": self.tau_m,
+            "c_m_pF": self.c_m,
+            "r_input_MOhm": self.r_input,
+            "g_leak_nS": self.g_leak,
+            "v_range_mV": self.v_range,
+            "confidence": self.confidence,
+            "source": self.source,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Cell model database
+# ---------------------------------------------------------------------------
+
+class CellModelDB:
+    """Registry of cell model parameter sets.
+
+    Supports lookup by model name, cell class, or super class.
+    """
+
+    def __init__(self):
+        self._models = {}
+        self._class_map = {}     # cell_class → model name
+        self._super_map = {}     # super_class → model name
+
+    def register(self, model, cell_classes=None, super_classes=None):
+        """Register a model with optional class mappings."""
+        self._models[model.name] = model
+        for cc in (cell_classes or []):
+            self._class_map[cc] = model.name
+        for sc in (super_classes or []):
+            self._super_map[sc] = model.name
+
+    def get(self, name):
+        """Get a model by name."""
+        if name not in self._models:
+            raise KeyError(f"Unknown cell model '{name}'. "
+                           f"Available: {list(self._models.keys())}")
+        return self._models[name]
+
+    def resolve(self, cell_class=None, super_class=None):
+        """Resolve the best model for a given cell/super class.
+
+        Priority: cell_class > super_class > default.
+        """
+        if cell_class and cell_class in self._class_map:
+            return self._models[self._class_map[cell_class]]
+        if super_class and super_class in self._super_map:
+            return self._models[self._super_map[super_class]]
+        return self._models.get("default_spiking")
+
+    def list_models(self):
+        """List all registered models."""
+        return [m.to_dict() for m in self._models.values()]
+
+    def __len__(self):
+        return len(self._models)
+
+    def __contains__(self, name):
+        return name in self._models
+
+
+# ---------------------------------------------------------------------------
+# Build the database
+# ---------------------------------------------------------------------------
+
+CELL_MODEL_DB = CellModelDB()
+
+# --- Spiking models ---
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="default_spiking",
+        v_rest=-55.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=20.0, t_ref=2.0, c_m=8.0, r_input=500.0,
+        confidence=LOW,
+        source="Shiu et al. 2024 (adapted: V_rest corrected to -55 mV)",
+        notes="Default for any neuron without class-specific data.",
+    ),
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="shiu_uniform",
+        v_rest=-52.0, v_thresh=-45.0, v_reset=-52.0,
+        tau_m=20.0, t_ref=2.2, c_m=8.0, r_input=500.0,
+        confidence=MEDIUM,
+        source="Shiu et al. 2024, Nature 634:210-219",
+        notes="Exact Shiu parameters. V_rest=V_reset=-52 mV. "
+              "All neurons identical. Validated for activation patterns.",
+    ),
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="projection_neuron",
+        v_rest=-58.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=20.0, t_ref=2.0, c_m=8.0, r_input=600.0,
+        confidence=HIGH,
+        source="Gouwens & Wilson 2009, J Neurosci 29:6239",
+        notes="Antennal lobe PNs. V_rest from cell-attached recording. "
+              "R_input=598+/-69 MOhm. C_m fitted: 0.8-2.6 uF/cm^2.",
+    ),
+    cell_classes=["PN"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="kenyon_cell",
+        v_rest=-55.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=5.0, t_ref=2.0, c_m=3.6, r_input=1360.0,
+        confidence=HIGH,
+        source="Su & O'Dowd 2003",
+        notes="Mushroom body Kenyon cells. Very high R_input (1.36 GOhm), "
+              "tiny C_m (3.6 pF). tau_m estimated from R*C.",
+    ),
+    cell_classes=["KC"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="motoneuron_fast",
+        v_rest=-68.0, v_thresh=-45.0, v_reset=-60.0,
+        tau_m=10.0, t_ref=2.0, c_m=15.0, r_input=150.0,
+        confidence=HIGH,
+        source="Azevedo et al. 2020",
+        notes="Fast leg motoneurons. Low R_input, high C_m.",
+    ),
+    cell_classes=["MN_fast"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="motoneuron_slow",
+        v_rest=-48.0, v_thresh=-40.0, v_reset=-48.0,
+        tau_m=20.0, t_ref=2.0, c_m=10.0, r_input=700.0,
+        confidence=HIGH,
+        source="Azevedo et al. 2020",
+        notes="Slow leg motoneurons. High R_input, depolarized V_rest.",
+    ),
+    cell_classes=["MN_slow"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="clock_neuron",
+        v_rest=-50.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=4.0, t_ref=2.0, c_m=12.0, r_input=305.0,
+        confidence=MEDIUM,
+        source="Sheeba et al. 2008",
+        notes="Large ventral lateral neurons (l-LNv). "
+              "tau_m estimated from R*C ~ 305 MOhm * 12 pF.",
+    ),
+    cell_classes=["LNv"],
+)
+
+# --- Register super_class defaults ---
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="central_default",
+        v_rest=-55.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=20.0, t_ref=2.0, c_m=8.0, r_input=500.0,
+        confidence=LOW,
+        source="Composite estimate",
+        notes="Default for central brain neurons without specific data.",
+    ),
+    super_classes=["central"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="motor_default",
+        v_rest=-60.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=15.0, t_ref=2.0, c_m=12.0, r_input=300.0,
+        confidence=LOW,
+        source="Average of fast/slow motoneuron data",
+        notes="Default for motor, ascending, descending neurons.",
+    ),
+    super_classes=["motor", "ascending", "descending"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="sensory_default",
+        v_rest=-60.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=10.0, t_ref=2.0, c_m=10.0, r_input=400.0,
+        confidence=LOW,
+        source="Estimated from olfactory receptor neuron literature",
+        notes="Default for sensory neurons.",
+    ),
+    super_classes=["sensory"],
+)
+
+# --- Graded models ---
+
+CELL_MODEL_DB.register(
+    GradedParams(
+        name="optic_graded",
+        v_rest=-55.0, tau_m=10.0, c_m=5.0, r_input=500.0,
+        v_range=15.0,
+        confidence=LOW,
+        source="Estimated; Stolz et al. 2021 approach",
+        notes="Default for optic lobe non-spiking interneurons. "
+              "Lamina monopolar cells, medulla interneurons. "
+              "Operating range ~15 mV around rest.",
+    ),
+    super_classes=["optic"],
+)
+
+CELL_MODEL_DB.register(
+    GradedParams(
+        name="photoreceptor",
+        v_rest=-60.0, tau_m=8.0, c_m=50.0, r_input=500.0,
+        v_range=20.0,
+        confidence=MEDIUM,
+        source="Niven et al. 2003; Juusola et al. 2017",
+        notes="R1-R6 photoreceptors. Large C_m (45-64 pF). "
+              "Graded response to light, no spikes.",
+    ),
+    cell_classes=["photoreceptor"],
+)
+
+
+# ---------------------------------------------------------------------------
+# Convenience functions
+# ---------------------------------------------------------------------------
+
+def get_cell_params(name):
+    """Get cell model parameters by name."""
+    return CELL_MODEL_DB.get(name)
+
+
+def list_cell_models():
+    """List all registered cell models."""
+    return CELL_MODEL_DB.list_models()
+#+end_src
+
+** assign.py — Assign models to neurons
+
+#+begin_src python :tangle ../bravli/models/assign.py
+"""Assign cell electrical models to FlyWire neurons.
+
+Uses the annotation table's super_class and cell_class columns to
+resolve the best available cell model for each neuron.
+"""
+
+import pandas as pd
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.models.cell_models import CELL_MODEL_DB
+from bravli.utils import get_logger
+
+LOG = get_logger("models.assign")
+
+
+@evaluate_datasets
+def assign_cell_models(annotations, mode="class_aware"):
+    """Assign cell model parameters to each neuron.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        Neuron annotation table with 'root_id', 'super_class',
+        and optionally 'cell_class' columns.
+    mode : str
+        "uniform" — all neurons get shiu_uniform params.
+        "class_aware" — resolve by cell_class > super_class > default.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input with added columns: model_name, model_mode,
+        v_rest, v_thresh, v_reset, tau_m, t_ref, c_m, r_input,
+        model_confidence.
+    """
+    result = annotations.copy()
+
+    if mode == "uniform":
+        model = CELL_MODEL_DB.get("shiu_uniform")
+        result["model_name"] = model.name
+        result["model_mode"] = model.mode
+        result["v_rest"] = model.v_rest
+        result["v_thresh"] = model.v_thresh
+        result["v_reset"] = model.v_reset
+        result["tau_m"] = model.tau_m
+        result["t_ref"] = model.t_ref
+        result["c_m"] = model.c_m
+        result["r_input"] = model.r_input
+        result["model_confidence"] = model.confidence
+        LOG.info("Assigned uniform Shiu model to %d neurons", len(result))
+        return result
+
+    # Class-aware mode
+    names = []
+    modes = []
+    v_rests = []
+    v_threshes = []
+    v_resets = []
+    tau_ms = []
+    t_refs = []
+    c_ms = []
+    r_inputs = []
+    confs = []
+
+    has_cell_class = "cell_class" in annotations.columns
+    has_super_class = "super_class" in annotations.columns
+
+    for _, row in annotations.iterrows():
+        cc = row.get("cell_class") if has_cell_class else None
+        sc = row.get("super_class") if has_super_class else None
+        model = CELL_MODEL_DB.resolve(cell_class=cc, super_class=sc)
+
+        if model is None:
+            model = CELL_MODEL_DB.get("default_spiking")
+
+        names.append(model.name)
+        modes.append(model.mode)
+        v_rests.append(model.v_rest)
+        v_threshes.append(model.v_thresh)
+        v_resets.append(model.v_reset)
+        tau_ms.append(model.tau_m)
+        t_refs.append(getattr(model, "t_ref", 0.0))
+        c_ms.append(model.c_m)
+        r_inputs.append(model.r_input)
+        confs.append(model.confidence)
+
+    result["model_name"] = names
+    result["model_mode"] = modes
+    result["v_rest"] = v_rests
+    result["v_thresh"] = v_threshes
+    result["v_reset"] = v_resets
+    result["tau_m"] = tau_ms
+    result["t_ref"] = t_refs
+    result["c_m"] = c_ms
+    result["r_input"] = r_inputs
+    result["model_confidence"] = confs
+
+    mode_counts = result["model_mode"].value_counts()
+    LOG.info("Assigned cell models to %d neurons: %s",
+             len(result), dict(mode_counts))
+    return result
+
+
+@evaluate_datasets
+def population_summary(annotated_neurons):
+    """Summarize cell model assignments across the population.
+
+    Parameters
+    ----------
+    annotated_neurons : pd.DataFrame
+        Output of assign_cell_models.
+
+    Returns
+    -------
+    pd.DataFrame
+        Per-model summary: count, mode, key parameters.
+    """
+    if "model_name" not in annotated_neurons.columns:
+        raise ValueError("No 'model_name' column — run assign_cell_models first")
+
+    rows = []
+    for name, group in annotated_neurons.groupby("model_name"):
+        row = {
+            "model_name": name,
+            "n_neurons": len(group),
+            "mode": group["model_mode"].iloc[0],
+            "v_rest_mV": group["v_rest"].iloc[0],
+            "v_thresh_mV": group["v_thresh"].iloc[0],
+            "tau_m_ms": group["tau_m"].iloc[0],
+            "c_m_pF": group["c_m"].iloc[0],
+            "confidence": group["model_confidence"].iloc[0],
+        }
+        rows.append(row)
+
+    return (pd.DataFrame(rows)
+            .set_index("model_name")
+            .sort_values("n_neurons", ascending=False))
+#+end_src
+
+* Tests
+
+#+begin_src python :tangle ../tests/test_cell_models.py
+"""Tests for the cell models module."""
+
+import pandas as pd
+import pytest
+
+from bravli.models.cell_models import (
+    LIFParams,
+    GradedParams,
+    CellModelDB,
+    CELL_MODEL_DB,
+    get_cell_params,
+    list_cell_models,
+    HIGH, MEDIUM, LOW,
+)
+from bravli.models.assign import (
+    assign_cell_models,
+    population_summary,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_annotations():
+    """Synthetic neuron annotations spanning several super/cell classes."""
+    return pd.DataFrame({
+        "root_id": range(1, 11),
+        "super_class": [
+            "central", "central", "central", "central",
+            "optic", "optic", "optic",
+            "sensory", "motor", "descending",
+        ],
+        "cell_class": [
+            "KC", "KC", "PN", "MBON",
+            "Mi", "Tm", "T4",
+            "ORN", "MN_fast", "DN",
+        ],
+        "cell_type": [
+            "KC_a", "KC_b", "PN_DM1", "MBON_01",
+            "Mi1", "Tm1", "T4a",
+            "ORN_a", "MN5", "DN_a",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# LIFParams tests
+# ---------------------------------------------------------------------------
+
+class TestLIFParams:
+    def test_default_values(self):
+        m = LIFParams(name="test")
+        assert m.v_rest == -55.0
+        assert m.v_thresh == -45.0
+        assert m.mode == "spiking"
+
+    def test_g_leak(self):
+        m = LIFParams(name="test", r_input=500.0)
+        assert abs(m.g_leak - 2.0) < 0.01  # 1000/500 = 2 nS
+
+    def test_to_dict(self):
+        m = LIFParams(name="test")
+        d = m.to_dict()
+        assert d["name"] == "test"
+        assert d["mode"] == "spiking"
+        assert "v_rest_mV" in d
+        assert "g_leak_nS" in d
+
+    def test_frozen(self):
+        m = LIFParams(name="test")
+        with pytest.raises(AttributeError):
+            m.v_rest = -60.0
+
+
+class TestGradedParams:
+    def test_default_threshold(self):
+        m = GradedParams(name="test")
+        assert m.v_thresh == 100.0  # unreachable
+        assert m.mode == "graded"
+
+    def test_v_reset_equals_v_rest(self):
+        m = GradedParams(name="test", v_rest=-55.0)
+        assert m.v_reset == -55.0
+
+    def test_to_dict_has_v_range(self):
+        m = GradedParams(name="test")
+        d = m.to_dict()
+        assert "v_range_mV" in d
+
+
+# ---------------------------------------------------------------------------
+# Database tests
+# ---------------------------------------------------------------------------
+
+class TestCellModelDB:
+    def test_db_has_models(self):
+        assert len(CELL_MODEL_DB) >= 10
+
+    def test_get_known_model(self):
+        m = get_cell_params("kenyon_cell")
+        assert m.name == "kenyon_cell"
+        assert m.mode == "spiking"
+        assert m.confidence == HIGH
+
+    def test_get_unknown_raises(self):
+        with pytest.raises(KeyError):
+            get_cell_params("nonexistent")
+
+    def test_resolve_by_cell_class(self):
+        m = CELL_MODEL_DB.resolve(cell_class="KC")
+        assert m.name == "kenyon_cell"
+
+    def test_resolve_by_super_class(self):
+        m = CELL_MODEL_DB.resolve(super_class="optic")
+        assert m.mode == "graded"
+
+    def test_resolve_fallback_to_default(self):
+        m = CELL_MODEL_DB.resolve(cell_class="unknown_class")
+        assert m.name == "default_spiking"
+
+    def test_list_models(self):
+        models = list_cell_models()
+        assert len(models) >= 10
+        names = [m["name"] for m in models]
+        assert "kenyon_cell" in names
+        assert "optic_graded" in names
+        assert "shiu_uniform" in names
+
+    def test_shiu_params(self):
+        m = get_cell_params("shiu_uniform")
+        assert m.v_rest == -52.0
+        assert m.v_reset == -52.0
+        assert m.tau_m == 20.0
+        assert m.t_ref == 2.2
+
+    def test_optic_is_graded(self):
+        m = CELL_MODEL_DB.resolve(super_class="optic")
+        assert isinstance(m, GradedParams)
+        assert m.v_thresh == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Assignment tests
+# ---------------------------------------------------------------------------
+
+class TestAssignCellModels:
+    def test_uniform_mode(self, sample_annotations):
+        result = assign_cell_models(sample_annotations, mode="uniform")
+        assert all(result["model_name"] == "shiu_uniform")
+        assert all(result["v_rest"] == -52.0)
+
+    def test_class_aware_mode(self, sample_annotations):
+        result = assign_cell_models(sample_annotations, mode="class_aware")
+
+        # KCs should get kenyon_cell model
+        kc = result[result["cell_class"] == "KC"]
+        assert all(kc["model_name"] == "kenyon_cell")
+        assert all(kc["tau_m"] == 5.0)
+
+        # PNs should get projection_neuron model
+        pn = result[result["cell_class"] == "PN"]
+        assert all(pn["model_name"] == "projection_neuron")
+
+        # Optic lobe neurons should get graded model
+        optic = result[result["super_class"] == "optic"]
+        assert all(optic["model_mode"] == "graded")
+
+        # Fast motoneurons get their own model
+        mn = result[result["cell_class"] == "MN_fast"]
+        assert all(mn["model_name"] == "motoneuron_fast")
+
+    def test_has_all_expected_columns(self, sample_annotations):
+        result = assign_cell_models(sample_annotations)
+        expected = ["model_name", "model_mode", "v_rest", "v_thresh",
+                    "v_reset", "tau_m", "t_ref", "c_m", "r_input",
+                    "model_confidence"]
+        for col in expected:
+            assert col in result.columns
+
+
+class TestPopulationSummary:
+    def test_summary_structure(self, sample_annotations):
+        assigned = assign_cell_models(sample_annotations)
+        summary = population_summary(assigned)
+        assert "n_neurons" in summary.columns
+        assert "mode" in summary.columns
+        assert "confidence" in summary.columns
+
+    def test_total_matches(self, sample_annotations):
+        assigned = assign_cell_models(sample_annotations)
+        summary = population_summary(assigned)
+        assert summary["n_neurons"].sum() == len(sample_annotations)
+#+end_src
+
+* Key Design Decisions
+
+| Decision                                  | Rationale                                                                   |
+|-------------------------------------------+-----------------------------------------------------------------------------|
+| Graded = LIF with unreachable threshold   | Computationally free; same simulator. Stolz et al. 2021 approach.           |
+| CellModelDB registry pattern              | Extensible: add new cell types without touching existing code.              |
+| Resolution: cell_class > super_class > default | Maximizes specificity where data exists, falls back gracefully.         |
+| Optic lobe → graded by default            | Most optic interneurons are non-spiking. Biologically justified.            |
+| Two reference models: Shiu + corrected    | Shiu for reproduction; corrected (V_rest=-55) for biophysical accuracy.     |
+| No AdEx yet                               | Adaptation parameters unconstrained by Drosophila data. Add when available. |
+
+* Bibliography
+
+- Shiu PK et al. (2024). Nature 634:210-219.
+- Gouwens NW, Wilson RI (2009). Signal propagation in Drosophila central neurons.
+  /J Neurosci/ 29:6239-53.
+- Su H, O'Dowd DK (2003). /J Neurosci/ 23:9246-53.
+- Azevedo AW et al. (2020). A size principle for recruitment of Drosophila leg
+  motor neurons. /eLife/ 9:e56754.
+- Sheeba V et al. (2008). Large ventral lateral neurons modulate arousal and sleep
+  in Drosophila. /Curr Biol/ 18:1537-45.
+- Stolz T et al. (2021). /Front Neurorobot/ 15:633526.
+- Niven JE et al. (2003). The contribution of Shaker K+ channels to the information
+  capacity of Drosophila photoreceptors. /Nature/ 421:630-4.
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 10-cell-models
+tag: lesson/10-cell-models
+files_created:
+  - bravli/models/__init__.py
+  - bravli/models/cell_models.py
+  - bravli/models/assign.py
+  - tests/test_cell_models.py
+verification:
+  - "python -c 'from bravli.models import CELL_MODEL_DB, assign_cell_models' succeeds"
+  - "pytest tests/test_cell_models.py -v — all tests pass"
+next_lesson: 11-simulation
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

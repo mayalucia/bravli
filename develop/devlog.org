@@ -40,7 +40,7 @@ exploration.
 | =atlas/=          | Done   | Neuropil meshes + skeleton rendering               |
 | =connectivity/=   | Done    | Edge list loading, neuropil matrices, pathways     |
 | =physiology/=     | Done    | Synapse models, NT-to-biophysics DB, assignment    |
-| =models/=         | Planned | Cell electrical models (LIF, graded)              |
+| =models/=         | Done    | Cell electrical models (LIF, graded, CellModelDB) |
 | =simulation/=     | Planned | Whole-brain circuit simulation                    |
 
 *** Literate Source (=codev/=)
@@ -59,6 +59,7 @@ Source files are tangled from these.
 |     07 | =07-plan-fly-brain-2026.org=  | Roadmap: BBP pipeline mapped to fly      |
 |     08 | =08-connectivity.org=         | Edge list, neuropil matrices, pathways   |
 |     09 | =09-synaptic-physiology.org=  | NT-to-biophysics synapse parameter DB    |
+|     10 | =10-cell-models.org=          | LIF + graded point neuron models         |
 
 *** Data (=data/=, not committed)
 | Asset                                      | Size  | Auth needed? |
@@ -75,7 +76,7 @@ Source files are tangled from these.
 - =whole_brain_atlas_with_neurons.html= --- full atlas + neuron morphologies
 
 *** Tests (=tests/=)
-9 test files covering all modules (105 tests). Tests that require the Zenodo parquet or
+10 test files covering all modules (126 tests). Tests that require the Zenodo parquet or
 =fafbseg= are conditionally skipped.
 
 ** Origin Story
@@ -106,7 +107,7 @@ Transcripts of the session are at:
 |     0 | Foundation (lessons 00-06) | Done    | 3D atlas, factsheets, tests            |
 |     1 | Connectivity analysis      | Done    | Edge list, neuropil matrix, pathways   |
 |     2 | Synaptic physiology        | Done    | Per-NT synapse models + assignment      |
-|     3 | Cell electrical models     | Planned | LIF/graded models per cell type class  |
+|     3 | Cell electrical models     | Done    | LIF/graded models per cell type class  |
 |     4 | Circuit simulation         | Planned | Whole-brain LIF on laptop              |
 |     5 | Digital twin portal        | Planned | Interactive exploration tool            |
 |     6 | WebGPU visualization       | Future  | MayaPortal integration                 |
@@ -120,8 +121,8 @@ Transcripts of the session are at:
 4. [X] Build =bravli/connectivity/= module (edges, matrix, pathways)
 5. [X] Write =codev/09-synaptic-physiology.org=
 6. [X] Build =bravli/physiology/= module (synapse_models, assign)
-7. [ ] Write =codev/10-cell-models.org=
-8. [ ] Build =bravli/models/= module
+7. [X] Write =codev/10-cell-models.org=
+8. [X] Build =bravli/models/= module
 
 ** Dependencies
 
@@ -179,6 +180,21 @@ is applied. MayaPortal will eventually provide the rendering backend.
   - Shiu et al. 2024: reference LIF params (tau_syn=5ms, W_syn=0.275mV)
 - Wrote =codev/09-synaptic-physiology.org= — literate lesson
 - 20 new tests, all passing (105 total, 2 skipped)
+
+** <2026-02-19 Wed> Phase 3 — Cell electrical models
+- Built =bravli/models/= module:
+  - =cell_models.py=: LIFParams + GradedParams frozen dataclasses,
+    CellModelDB registry with cell_class > super_class > default resolution
+  - =assign.py=: assign cell models (uniform or class-aware), population summary
+- 12 registered models:
+  - Spiking: default_spiking, shiu_uniform, projection_neuron (HIGH),
+    kenyon_cell (HIGH), motoneuron_fast/slow (HIGH), clock_neuron (MEDIUM),
+    central_default, motor_default, sensory_default
+  - Graded: optic_graded (LOW), photoreceptor (MEDIUM)
+- Key design: graded neurons = LIF with unreachable threshold (+100 mV),
+  following Stolz et al. 2021 approach
+- Wrote =codev/10-cell-models.org= — literate lesson
+- 21 new tests, all passing (126 total, 2 skipped)
 
 ** <2026-02-19 Wed> Phase 1 — Connectivity analysis
 - Downloaded =proofread_connections_783.feather= from Zenodo (852 MB, auth-free)
