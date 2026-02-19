@@ -8,6 +8,7 @@ Subpackages:
     parcellation  Neuropil region hierarchy and FlyWire loader
     composition   Cell type distributions and neurotransmitter profiles
     factology     Structured scientific measurements
+    connectivity  Connectome edge list analysis and neuropil matrices
     viz           3D visualization via navis
 """
 

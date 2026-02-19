@@ -38,7 +38,7 @@ exploration.
 | =viz/=            | Done   | 3D visualization (navis + plotly)                  |
 | =explore/=        | Done   | Mushroom body deep dive                            |
 | =atlas/=          | Done   | Neuropil meshes + skeleton rendering               |
-| =connectivity/=   | Planned | Synapse-level connectivity analysis               |
+| =connectivity/=   | Done    | Edge list loading, neuropil matrices, pathways     |
 | =physiology/=     | Planned | NT-based synaptic parameters                      |
 | =models/=         | Planned | Cell electrical models (LIF, graded)              |
 | =simulation/=     | Planned | Whole-brain circuit simulation                    |
@@ -57,12 +57,14 @@ Source files are tangled from these.
 |     05 | =05-explore-mushroom-body.org= | MB deep dive: KCs, MBONs, DANs         |
 |     06 | =06-atlas.org=                | Neuropil meshes + skeleton morphologies  |
 |     07 | =07-plan-fly-brain-2026.org=  | Roadmap: BBP pipeline mapped to fly      |
+|     08 | =08-connectivity.org=         | Edge list, neuropil matrices, pathways   |
 
 *** Data (=data/=, not committed)
 | Asset                                      | Size  | Auth needed? |
 |--------------------------------------------+-------+--------------|
 | =flywire_annotations/= (139K neuron TSV)   | 32 MB | No           |
 | =zenodo/sk_lod1_783_healed_ds2.parquet=    | 5.1 GB | No          |
+| =zenodo/proofread_connections_783.feather=  | 852 MB | No          |
 | Neuropil meshes (78 PLY, via =fafbseg=)    | ~1 MB | No (bundled) |
 
 *** Outputs (=output/=, not committed)
@@ -101,7 +103,7 @@ Transcripts of the session are at:
 | Phase | Description               | Status  | Key deliverable                        |
 |-------+---------------------------+---------+----------------------------------------|
 |     0 | Foundation (lessons 00-06) | Done    | 3D atlas, factsheets, tests            |
-|     1 | Connectivity analysis      | Next    | Neuropil connectivity matrix           |
+|     1 | Connectivity analysis      | Done    | Edge list, neuropil matrix, pathways   |
 |     2 | Synaptic physiology        | Planned | NT-based synapse parameter database    |
 |     3 | Cell electrical models     | Planned | LIF/graded models per cell type class  |
 |     4 | Circuit simulation         | Planned | Whole-brain LIF on laptop              |
@@ -111,10 +113,12 @@ Transcripts of the session are at:
 ** Immediate Next Steps
 
 1. [X] Initialize git repo, make initial commit
-2. [ ] Write =codev/08-connectivity.org= --- synapse table loading, neuropil
-   connectivity matrix, pathway analysis
-3. [ ] Acquire synapse data (Codex download or CAVE API)
-4. [ ] Build =bravli/connectivity/= module
+2. [X] Write =codev/08-connectivity.org= --- edge list loading, neuropil
+   connectivity matrix, pathway analysis, NT classification
+3. [X] Acquire synapse data (Zenodo feather, 852 MB, auth-free)
+4. [X] Build =bravli/connectivity/= module (edges, matrix, pathways)
+5. [ ] Write =codev/09-synaptic-physiology.org=
+6. [ ] Build =bravli/physiology/= module
 
 ** Dependencies
 
@@ -157,6 +161,18 @@ is applied. MayaPortal will eventually provide the rendering backend.
 - Created =develop/devlog.org= (this file)
 - Initialized git repository
 - Initial commit: Phase 0 complete
+
+** <2026-02-19 Wed> Phase 1 — Connectivity analysis
+- Downloaded =proofread_connections_783.feather= from Zenodo (852 MB, auth-free)
+  - 16.8M edges, 138K neurons, 79 neuropils
+  - Columns: pre/post root ID, neuropil, syn_count, 6 NT probability averages
+- Wrote =codev/08-connectivity.org= — literate lesson on connectome analysis
+- Built =bravli/connectivity/= module:
+  - =edges.py=: load, threshold ($\geq 5$ syn), assign dominant NT, aggregate
+  - =matrix.py=: neuropil synapse counts, 79×79 connectivity matrix, NT matrices
+  - =pathways.py=: pathway stats, top connections, convergence/divergence, NT breakdown
+- 22 new tests, all passing (85 total, 2 skipped)
+- Added =pyarrow= and =scipy= to dependencies
 
 * Local variables :noexport:
 # Local Variables:

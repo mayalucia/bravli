@@ -1,0 +1,1045 @@
+#+title: Lesson 08 — Connectivity
+#+subtitle: The wiring diagram: from edge lists to neuropil circuits
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+The connectome is a graph. Every neuron is a node; every synapse is a directed edge.
+The FlyWire connectome contains 54.5 million synapses connecting 139,255 neurons. This
+is the complete wiring diagram of an adult /Drosophila/ brain — the first time in
+history we have such a thing for an animal with complex behavior.
+
+At the Blue Brain Project, connectivity was /predicted/: given the 3D morphologies of
+placed neurons, axo-dendritic overlap and bouton density constraints produced a
+probabilistic connectivity matrix (Peters' rule + corrections). This was the most
+computationally expensive step — and the least certain. The entire BBP pipeline existed
+to reach this point: build anatomy so you can predict connectivity.
+
+For the fly brain, connectivity is /given/. We don't predict; we load. The challenge
+shifts from reconstruction to analysis: What structure does this graph have? How are
+neuropils connected to each other? Which pathways are excitatory, which inhibitory?
+Where are the hubs, the bottlenecks, the communities?
+
+This lesson loads the FlyWire aggregated edge list (Zenodo, 852 MB), builds a
+neuropil-to-neuropil connectivity matrix, computes pathway statistics, and produces
+connectivity factsheets. The data is pre-aggregated: one row per (pre-neuron,
+post-neuron, neuropil) triple, with synapse count and neurotransmitter averages. This
+is the =proofread_connections_783.feather= file from the Dorkenwald et al. 2024
+companion data release.
+
+** The Data
+
+The aggregated edge list (=proofread_connections_783.feather=) contains 16.8 million
+rows — one per directed (pre, post, neuropil) triple. Each row carries:
+
+| Column             | Type    | Description                                  |
+|--------------------+---------+----------------------------------------------|
+| =pre_pt_root_id=   | int64   | Presynaptic neuron root ID                   |
+| =post_pt_root_id=  | int64   | Postsynaptic neuron root ID                  |
+| =neuropil=          | string  | Brain region where synapses fall              |
+| =syn_count=         | int64   | Number of synapses in this (pre, post, np)   |
+| =gaba_avg=          | float64 | Avg GABA probability across synapses         |
+| =ach_avg=           | float64 | Avg acetylcholine probability                |
+| =glut_avg=          | float64 | Avg glutamate probability                    |
+| =oct_avg=           | float64 | Avg octopamine probability                   |
+| =ser_avg=           | float64 | Avg serotonin probability                    |
+| =da_avg=            | float64 | Avg dopamine probability                     |
+
+Key statistics:
+- 16,847,997 rows (edges per neuropil)
+- 138,639 unique neurons (138,005 as pre, 137,090 as post)
+- 79 neuropils
+- 2,710,038 edges at threshold $\geq 5$ synapses (the Dorkenwald et al. threshold)
+- Median synapse count per edge: 1; mean: 3.2; max: 2,405
+
+A neuron can appear in multiple neuropils (its axon reaches several regions), so the
+same (pre, post) pair may have multiple rows — one per neuropil where they share
+synapses.
+
+** Learning Objectives
+
+- [ ] Load the aggregated edge list and understand its structure
+- [ ] Build a neuropil-to-neuropil connectivity matrix weighted by synapse count
+- [ ] Apply the Dorkenwald threshold ($\geq 5$ synapses) for reliable connections
+- [ ] Classify connections by dominant neurotransmitter
+- [ ] Compute convergence and divergence per cell type (if annotations joined)
+- [ ] Produce connectivity factsheets for neuropil pairs
+
+** File Map
+
+| File                                   | Role                                        |
+|----------------------------------------+---------------------------------------------|
+| =bravli/connectivity/__init__.py=     | Subpackage exports                          |
+| =bravli/connectivity/edges.py=        | Edge list loading + filtering               |
+| =bravli/connectivity/matrix.py=       | Neuropil connectivity matrix                |
+| =bravli/connectivity/pathways.py=     | Pathway-level analysis + NT classification  |
+| =tests/test_connectivity.py=          | Tests with synthetic edge data              |
+
+* Architecture
+
+#+begin_example
+   proofread_connections_783.feather
+   (pre_pt_root_id, post_pt_root_id, neuropil,
+    syn_count, gaba_avg, ach_avg, ...)
+                │
+                ▼
+   ┌─── edges.py ───────────────────┐
+   │  load_edges(path)               │
+   │  threshold_edges(df, min_syn)   │
+   │  assign_nt(df)                  │
+   │  aggregate_by_pair(df)          │
+   └────────────┬────────────────────┘
+                │
+        ┌───────┴──────────┐
+        ▼                  ▼
+   ┌─ matrix.py ──┐  ┌─ pathways.py ─────────────┐
+   │  neuropil     │  │  pathway_stats(df)         │
+   │  connectivity │  │  convergence_divergence()  │
+   │  matrix       │  │  nt_pathway_breakdown()    │
+   │  (79×79)      │  │  top_pathways()            │
+   └───────────────┘  └───────────────────────────┘
+#+end_example
+
+The module is organized in three layers:
+
+1. *edges.py* — load, filter, and annotate the raw edge list
+2. *matrix.py* — aggregate edges into neuropil-level matrices
+3. *pathways.py* — analyze individual pathways between neuron groups
+
+* The Science
+
+** Why threshold at 5 synapses?
+
+A single synapse between two neurons could be noise — a segmentation error, a
+false-positive in synapse detection, or a genuinely non-functional contact.
+Dorkenwald et al. (2024) applied a threshold of $\geq 5$ synapses per
+(pre, post, neuropil) triple before considering a connection "real". This reduces
+the edge count from 16.8M to 2.7M — an 84% reduction — and dramatically cleans the
+graph.
+
+The threshold is not arbitrary. It was validated against known circuit motifs and
+produces connectivity patterns consistent with electrophysiology. Below 5, the graph
+is dominated by weak, likely spurious connections. Above 5, the remaining edges
+form circuits that match known biology.
+
+We make this threshold configurable but default to 5.
+
+** The neuropil connectivity matrix
+
+The 79×79 neuropil connectivity matrix $M$ answers: how many synapses connect neurons
+whose axons are in neuropil $i$ to neurons whose dendrites are in neuropil $j$? More
+precisely, $M_{ij} = \sum_{\text{edges in neuropil } j} \text{syn\_count}$ where the
+presynaptic neuron "belongs to" neuropil $i$.
+
+But what does "belongs to" mean? A neuron spans multiple neuropils. The edge list
+already tells us /where/ the synapses are (the =neuropil= column). So $M_{ij}$ counts
+synapses /located in/ neuropil $j$ from neurons that have their soma or primary
+arbor in neuropil $i$. For this lesson, we take a simpler approach: the neuropil
+connectivity matrix counts how many synapses /are located in each neuropil/, regardless
+of where the pre/post neurons "live".
+
+This gives us a /within-neuropil/ synapse count: how much synaptic processing happens
+in each region, and between which pairs of neurons.
+
+** Neurotransmitter classification
+
+Each edge carries 6 averaged NT probabilities: GABA, ACh, glutamate, octopamine,
+serotonin, dopamine. The dominant NT for an edge is the one with the highest average
+probability. This lets us color the connectivity matrix by excitation/inhibition:
+
+| NT            | Sign        | Speed      |
+|---------------+-------------+------------|
+| Acetylcholine | Excitatory  | Fast       |
+| GABA          | Inhibitory  | Fast       |
+| Glutamate     | Exc or Inh  | Fast/slow  |
+| Serotonin     | Modulatory  | Slow       |
+| Dopamine      | Modulatory  | Slow       |
+| Octopamine    | Modulatory  | Slow       |
+
+In Drosophila, glutamate can be either excitatory (at glutamate receptors) or
+inhibitory (at GluCl channels). This ambiguity is biologically real and important —
+we flag it rather than force a classification.
+
+* Implementation
+
+** Connectivity subpackage init
+
+#+begin_src python :tangle ../bravli/connectivity/__init__.py
+"""connectivity — FlyWire connectome edge list analysis.
+
+Load the aggregated edge list, filter by synapse count threshold,
+build neuropil connectivity matrices, and analyze pathway statistics.
+
+Data source: Zenodo record 10676866
+  proofread_connections_783.feather (852 MB)
+"""
+
+from .edges import (
+    load_edges,
+    threshold_edges,
+    assign_dominant_nt,
+    aggregate_by_pair,
+)
+from .matrix import (
+    neuropil_synapse_counts,
+    neuropil_connectivity_matrix,
+    neuropil_nt_matrices,
+)
+from .pathways import (
+    pathway_stats,
+    top_pathways,
+    convergence_divergence,
+    nt_pathway_breakdown,
+)
+#+end_src
+
+** edges.py — Loading and filtering
+
+The edge list is 852 MB in Apache Feather format. Feather is a columnar format
+designed for fast I/O — loading 16.8M rows takes ~3 seconds. We add =pyarrow= as a
+dependency (it provides Feather support in pandas).
+
+The key operations:
+1. *Load*: Read the feather file into a DataFrame
+2. *Threshold*: Keep only edges with $\geq n$ synapses (default 5)
+3. *Assign NT*: Add a =dominant_nt= column based on max probability
+4. *Aggregate*: Collapse the per-neuropil rows into per-(pre, post) edges
+
+#+begin_src python :tangle ../bravli/connectivity/edges.py
+"""Edge list loading, filtering, and neurotransmitter annotation.
+
+The FlyWire aggregated edge list contains one row per
+(pre_neuron, post_neuron, neuropil) triple. This module loads it,
+applies thresholds, and annotates with dominant neurotransmitter.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.utils import get_logger
+
+LOG = get_logger("connectivity.edges")
+
+# NT probability columns in the feather file
+NT_COLUMNS = ["gaba_avg", "ach_avg", "glut_avg", "oct_avg", "ser_avg", "da_avg"]
+
+# Human-readable names for NT columns
+NT_NAMES = {
+    "gaba_avg": "GABA",
+    "ach_avg": "acetylcholine",
+    "glut_avg": "glutamate",
+    "oct_avg": "octopamine",
+    "ser_avg": "serotonin",
+    "da_avg": "dopamine",
+}
+
+# NT sign classification
+NT_SIGN = {
+    "acetylcholine": "excitatory",
+    "GABA": "inhibitory",
+    "glutamate": "mixed",  # GluCl → inhibitory; AMPA/NMDA-like → excitatory
+    "octopamine": "modulatory",
+    "serotonin": "modulatory",
+    "dopamine": "modulatory",
+}
+
+
+def load_edges(path):
+    """Load the FlyWire aggregated edge list from a Feather file.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to proofread_connections_783.feather
+
+    Returns
+    -------
+    pd.DataFrame
+        16.8M rows, columns: pre_pt_root_id, post_pt_root_id,
+        neuropil, syn_count, gaba_avg, ach_avg, glut_avg,
+        oct_avg, ser_avg, da_avg.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Edge list not found: {path}\n"
+            "Download from: https://zenodo.org/records/10676866/files/"
+            "proofread_connections_783.feather"
+        )
+
+    LOG.info("Loading edge list from %s", path)
+    df = pd.read_feather(path)
+    LOG.info("Loaded %d edges across %d neuropils, %d unique neurons",
+             len(df), df["neuropil"].nunique(),
+             len(set(df["pre_pt_root_id"]) | set(df["post_pt_root_id"])))
+    return df
+
+
+def threshold_edges(edges, min_syn=5):
+    """Keep only edges with at least min_syn synapses.
+
+    The default threshold of 5 follows Dorkenwald et al. (2024), who
+    validated this cutoff against known circuit motifs.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with 'syn_count' column.
+    min_syn : int
+        Minimum synapse count to retain an edge.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered edge list.
+    """
+    n_before = len(edges)
+    result = edges[edges["syn_count"] >= min_syn].copy()
+    n_after = len(result)
+    LOG.info("Threshold >= %d synapses: %d → %d edges (%.1f%% retained)",
+             min_syn, n_before, n_after, 100 * n_after / n_before)
+    return result
+
+
+def assign_dominant_nt(edges):
+    """Add a 'dominant_nt' column based on max NT probability.
+
+    Also adds 'nt_sign' (excitatory / inhibitory / mixed / modulatory)
+    based on the dominant neurotransmitter.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with NT probability columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input with 'dominant_nt' and 'nt_sign' columns added.
+    """
+    result = edges.copy()
+    present_nt_cols = [c for c in NT_COLUMNS if c in result.columns]
+    if not present_nt_cols:
+        LOG.warning("No NT probability columns found; skipping NT assignment")
+        result["dominant_nt"] = "unknown"
+        result["nt_sign"] = "unknown"
+        return result
+
+    nt_probs = result[present_nt_cols]
+    dominant_col = nt_probs.idxmax(axis=1)
+    result["dominant_nt"] = dominant_col.map(NT_NAMES)
+    result["nt_sign"] = result["dominant_nt"].map(NT_SIGN)
+
+    LOG.info("NT assignment: %s",
+             dict(result["dominant_nt"].value_counts().head(6)))
+    return result
+
+
+@evaluate_datasets
+def aggregate_by_pair(edges):
+    """Collapse per-neuropil edges into per-(pre, post) totals.
+
+    A single (pre, post) neuron pair may have synapses in multiple
+    neuropils. This function sums syn_count and averages NT probabilities
+    across neuropils to produce one row per neuron pair.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with per-neuropil rows.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per (pre, post) pair with total syn_count and
+        weighted-average NT probabilities.
+    """
+    present_nt_cols = [c for c in NT_COLUMNS if c in edges.columns]
+
+    # Weighted average: weight by syn_count within each neuropil
+    agg = {"syn_count": "sum"}
+    for col in present_nt_cols:
+        edges[f"_{col}_weighted"] = edges[col] * edges["syn_count"]
+        agg[f"_{col}_weighted"] = "sum"
+
+    grouped = edges.groupby(
+        ["pre_pt_root_id", "post_pt_root_id"], as_index=False
+    ).agg(agg)
+
+    # Recover weighted averages
+    for col in present_nt_cols:
+        grouped[col] = grouped[f"_{col}_weighted"] / grouped["syn_count"]
+        grouped.drop(columns=[f"_{col}_weighted"], inplace=True)
+
+    # Clean up temp columns from input
+    for col in present_nt_cols:
+        wt_col = f"_{col}_weighted"
+        if wt_col in edges.columns:
+            edges.drop(columns=[wt_col], inplace=True)
+
+    LOG.info("Aggregated %d per-neuropil edges → %d neuron pairs",
+             len(edges), len(grouped))
+    return grouped
+#+end_src
+
+** matrix.py — Neuropil connectivity matrices
+
+The neuropil connectivity matrix is the coarsest view of the connectome: how much
+synaptic traffic flows within and between brain regions? This matrix is analogous
+to the inter-regional connectivity matrices that BBP computed for the rat
+somatosensory cortex (Reimann et al. 2024) — but ours is measured, not predicted.
+
+We compute three flavors:
+1. *Synapse counts*: total synapses per neuropil
+2. *Neuropil × neuropil matrix*: synapses between neurons in each pair of neuropils
+3. *NT-stratified matrices*: separate matrices for ACh, GABA, glutamate, etc.
+
+#+begin_src python :tangle ../bravli/connectivity/matrix.py
+"""Neuropil-level connectivity matrices.
+
+Aggregates the edge list into 79×79 neuropil connectivity matrices,
+optionally stratified by neurotransmitter type.
+"""
+
+import numpy as np
+import pandas as pd
+from scipy import sparse
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.utils import get_logger
+
+LOG = get_logger("connectivity.matrix")
+
+
+@evaluate_datasets
+def neuropil_synapse_counts(edges):
+    """Total synapse count per neuropil.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with 'neuropil' and 'syn_count' columns.
+
+    Returns
+    -------
+    pd.Series
+        Synapse counts indexed by neuropil name, sorted descending.
+    """
+    counts = (edges.groupby("neuropil")["syn_count"]
+              .sum()
+              .sort_values(ascending=False))
+    counts.name = "total_synapses"
+    return counts
+
+
+@evaluate_datasets
+def neuropil_connectivity_matrix(edges, annotations=None):
+    """Build a neuropil-to-neuropil connectivity matrix.
+
+    Each edge in the edge list has a 'neuropil' column indicating where
+    the synapses are located. To build a neuropil × neuropil matrix, we
+    need to know which neuropil the pre and post neurons "belong to".
+
+    Strategy: Use the neuropil where the most presynaptic outputs of a
+    neuron fall as its "home neuropil" (the neuropil where it contributes
+    the most synapses as a presynaptic partner).
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with neuropil, pre_pt_root_id, post_pt_root_id,
+        syn_count columns.
+    annotations : pd.DataFrame, optional
+        Neuron annotations. Not used in this implementation but reserved
+        for future cell-type-aware matrices.
+
+    Returns
+    -------
+    pd.DataFrame
+        Square DataFrame with neuropil names as both index and columns.
+        Values are total synapse counts from pre-neuropil to post-neuropil.
+    """
+    # Determine each neuron's "home neuropil" = where it sends the most synapses
+    pre_home = (edges.groupby(["pre_pt_root_id", "neuropil"])["syn_count"]
+                .sum()
+                .reset_index())
+    pre_home = (pre_home.sort_values("syn_count", ascending=False)
+                .drop_duplicates("pre_pt_root_id")
+                .set_index("pre_pt_root_id")["neuropil"]
+                .rename("pre_neuropil"))
+
+    post_home = (edges.groupby(["post_pt_root_id", "neuropil"])["syn_count"]
+                 .sum()
+                 .reset_index())
+    post_home = (post_home.sort_values("syn_count", ascending=False)
+                 .drop_duplicates("post_pt_root_id")
+                 .set_index("post_pt_root_id")["neuropil"]
+                 .rename("post_neuropil"))
+
+    # Join home neuropils onto edges
+    enriched = edges.copy()
+    enriched = enriched.join(pre_home, on="pre_pt_root_id")
+    enriched = enriched.join(post_home, on="post_pt_root_id")
+
+    # Pivot to matrix
+    matrix = (enriched.groupby(["pre_neuropil", "post_neuropil"])["syn_count"]
+              .sum()
+              .unstack(fill_value=0))
+
+    # Ensure square and sorted
+    all_nps = sorted(set(matrix.index) | set(matrix.columns))
+    matrix = matrix.reindex(index=all_nps, columns=all_nps, fill_value=0)
+
+    LOG.info("Built %d×%d neuropil connectivity matrix, "
+             "total synapses: %s",
+             matrix.shape[0], matrix.shape[1],
+             f"{matrix.values.sum():,.0f}")
+    return matrix
+
+
+@evaluate_datasets
+def neuropil_nt_matrices(edges):
+    """Build per-NT neuropil synapse count matrices.
+
+    For each of the 6 neurotransmitters, produces a Series of synapse
+    counts per neuropil, weighted by NT probability.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with neuropil, syn_count, and NT probability columns.
+
+    Returns
+    -------
+    dict of str → pd.Series
+        Keys are NT names, values are per-neuropil weighted synapse counts.
+    """
+    from bravli.connectivity.edges import NT_COLUMNS, NT_NAMES
+
+    result = {}
+    present_nt_cols = [c for c in NT_COLUMNS if c in edges.columns]
+
+    for col in present_nt_cols:
+        nt_name = NT_NAMES[col]
+        weighted = edges["syn_count"] * edges[col]
+        counts = (pd.DataFrame({"neuropil": edges["neuropil"], "weighted": weighted})
+                  .groupby("neuropil")["weighted"]
+                  .sum()
+                  .sort_values(ascending=False))
+        counts.name = f"{nt_name}_weighted_synapses"
+        result[nt_name] = counts
+
+    LOG.info("Built NT matrices for: %s", list(result.keys()))
+    return result
+#+end_src
+
+** pathways.py — Pathway analysis
+
+A /pathway/ is a connection between a defined group of presynaptic neurons and a
+defined group of postsynaptic neurons. In BBP terms, this is a "pathway" between
+two m-types. In fly terms, this could be ORN→PN (olfactory receptor neurons to
+projection neurons), KC→MBON (Kenyon cells to mushroom body output neurons), or
+any pair of cell types.
+
+This module provides functions for analyzing pathways: statistics, NT breakdown,
+convergence/divergence, and ranking.
+
+#+begin_src python :tangle ../bravli/connectivity/pathways.py
+"""Pathway-level connectivity analysis.
+
+A pathway is a connection pattern between groups of neurons (by neuropil,
+by cell type, or by neurotransmitter identity). This module provides
+tools for summarizing and comparing pathways.
+"""
+
+import numpy as np
+import pandas as pd
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.connectivity.edges import NT_COLUMNS, NT_NAMES, NT_SIGN
+from bravli.utils import get_logger
+
+LOG = get_logger("connectivity.pathways")
+
+
+@evaluate_datasets
+def pathway_stats(edges):
+    """Compute summary statistics for each neuropil's connectivity.
+
+    For each neuropil, reports: number of edges, total synapses,
+    unique pre/post neurons, mean/median synapse count per edge.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with neuropil, syn_count, pre/post root ID columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per neuropil with summary statistics.
+    """
+    stats = []
+    for np_name, group in edges.groupby("neuropil"):
+        stats.append({
+            "neuropil": np_name,
+            "n_edges": len(group),
+            "total_synapses": group["syn_count"].sum(),
+            "n_pre_neurons": group["pre_pt_root_id"].nunique(),
+            "n_post_neurons": group["post_pt_root_id"].nunique(),
+            "mean_syn_per_edge": group["syn_count"].mean(),
+            "median_syn_per_edge": group["syn_count"].median(),
+            "max_syn_per_edge": group["syn_count"].max(),
+        })
+    result = pd.DataFrame(stats).set_index("neuropil")
+    return result.sort_values("total_synapses", ascending=False)
+
+
+@evaluate_datasets
+def top_pathways(edges, n=20):
+    """Find the strongest neuron-to-neuron connections.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with pre/post root IDs and syn_count.
+    n : int
+        Number of top connections to return.
+
+    Returns
+    -------
+    pd.DataFrame
+        Top n edges by synapse count.
+    """
+    return (edges.nlargest(n, "syn_count")
+            [["pre_pt_root_id", "post_pt_root_id", "neuropil", "syn_count"]]
+            .reset_index(drop=True))
+
+
+@evaluate_datasets
+def convergence_divergence(edges):
+    """Compute convergence and divergence per neuron.
+
+    Divergence: how many post-synaptic partners does each neuron have?
+    Convergence: how many pre-synaptic partners does each neuron have?
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list (ideally after thresholding).
+
+    Returns
+    -------
+    dict with keys 'divergence' and 'convergence', each a pd.Series.
+    """
+    divergence = (edges.groupby("pre_pt_root_id")["post_pt_root_id"]
+                  .nunique()
+                  .rename("n_post_partners"))
+
+    convergence = (edges.groupby("post_pt_root_id")["pre_pt_root_id"]
+                   .nunique()
+                   .rename("n_pre_partners"))
+
+    LOG.info("Divergence: mean=%.1f, max=%d; Convergence: mean=%.1f, max=%d",
+             divergence.mean(), divergence.max(),
+             convergence.mean(), convergence.max())
+
+    return {
+        "divergence": divergence,
+        "convergence": convergence,
+    }
+
+
+@evaluate_datasets
+def nt_pathway_breakdown(edges):
+    """Break down connectivity by dominant neurotransmitter per neuropil.
+
+    For each neuropil, computes the fraction of synapses carried by each
+    neurotransmitter.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with neuropil, syn_count, and NT probability columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Neuropils as rows, NT types as columns, values are synapse
+        fractions (summing to ~1.0 per row).
+    """
+    present_nt_cols = [c for c in NT_COLUMNS if c in edges.columns]
+    if not present_nt_cols:
+        return pd.DataFrame()
+
+    rows = []
+    for np_name, group in edges.groupby("neuropil"):
+        total_syn = group["syn_count"].sum()
+        row = {"neuropil": np_name, "total_synapses": total_syn}
+        for col in present_nt_cols:
+            nt_name = NT_NAMES[col]
+            weighted = (group[col] * group["syn_count"]).sum()
+            row[nt_name] = weighted / total_syn if total_syn > 0 else 0.0
+        rows.append(row)
+
+    result = pd.DataFrame(rows).set_index("neuropil")
+    return result.sort_values("total_synapses", ascending=False)
+#+end_src
+
+* Tests
+
+All tests use synthetic edge data — no download required. The synthetic data mimics
+the real feather file's structure with a small 3-neuropil, 6-neuron graph.
+
+#+begin_src python :tangle ../tests/test_connectivity.py
+"""Tests for the connectivity module: edges, matrix, pathways."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from bravli.connectivity.edges import (
+    threshold_edges,
+    assign_dominant_nt,
+    aggregate_by_pair,
+)
+from bravli.connectivity.matrix import (
+    neuropil_synapse_counts,
+    neuropil_connectivity_matrix,
+    neuropil_nt_matrices,
+)
+from bravli.connectivity.pathways import (
+    pathway_stats,
+    top_pathways,
+    convergence_divergence,
+    nt_pathway_breakdown,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: synthetic edge data
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_edges():
+    """A small synthetic edge list mimicking FlyWire format.
+
+    3 neuropils (MB, AL, LH), 6 neurons.
+    Neuron 1→2: 10 syn in MB (ACh), 5 syn in AL (ACh)
+    Neuron 1→3: 3 syn in MB (GABA)
+    Neuron 2→4: 8 syn in AL (ACh)
+    Neuron 3→5: 2 syn in MB (GABA)
+    Neuron 4→5: 6 syn in LH (glutamate)
+    Neuron 5→6: 1 syn in LH (GABA) — below threshold
+    """
+    return pd.DataFrame({
+        "pre_pt_root_id":  [1, 1, 1, 2, 3, 4, 5],
+        "post_pt_root_id": [2, 2, 3, 4, 5, 5, 6],
+        "neuropil":        ["MB", "AL", "MB", "AL", "MB", "LH", "LH"],
+        "syn_count":       [10,   5,   3,   8,   2,   6,   1],
+        "gaba_avg":        [0.05, 0.03, 0.85, 0.04, 0.88, 0.10, 0.80],
+        "ach_avg":         [0.90, 0.92, 0.05, 0.91, 0.05, 0.10, 0.05],
+        "glut_avg":        [0.03, 0.03, 0.05, 0.03, 0.04, 0.75, 0.10],
+        "oct_avg":         [0.005, 0.005, 0.02, 0.005, 0.01, 0.02, 0.02],
+        "ser_avg":         [0.005, 0.005, 0.02, 0.005, 0.01, 0.02, 0.02],
+        "da_avg":          [0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Edge tests
+# ---------------------------------------------------------------------------
+
+class TestThresholdEdges:
+    def test_default_threshold(self, sample_edges):
+        result = threshold_edges(sample_edges, min_syn=5)
+        assert len(result) == 4  # edges with syn >= 5: 10, 5, 8, 6
+        assert all(result["syn_count"] >= 5)
+
+    def test_threshold_one_keeps_all(self, sample_edges):
+        result = threshold_edges(sample_edges, min_syn=1)
+        assert len(result) == len(sample_edges)
+
+    def test_high_threshold(self, sample_edges):
+        result = threshold_edges(sample_edges, min_syn=100)
+        assert len(result) == 0
+
+
+class TestAssignNT:
+    def test_assigns_dominant_nt(self, sample_edges):
+        result = assign_dominant_nt(sample_edges)
+        assert "dominant_nt" in result.columns
+        assert "nt_sign" in result.columns
+
+        # Neuron 1→2 in MB: ACh dominant (0.90)
+        row_1_2_mb = result[
+            (result["pre_pt_root_id"] == 1) &
+            (result["post_pt_root_id"] == 2) &
+            (result["neuropil"] == "MB")
+        ]
+        assert row_1_2_mb.iloc[0]["dominant_nt"] == "acetylcholine"
+        assert row_1_2_mb.iloc[0]["nt_sign"] == "excitatory"
+
+        # Neuron 1→3 in MB: GABA dominant (0.85)
+        row_1_3 = result[
+            (result["pre_pt_root_id"] == 1) &
+            (result["post_pt_root_id"] == 3)
+        ]
+        assert row_1_3.iloc[0]["dominant_nt"] == "GABA"
+        assert row_1_3.iloc[0]["nt_sign"] == "inhibitory"
+
+    def test_handles_missing_nt_columns(self):
+        df = pd.DataFrame({
+            "pre_pt_root_id": [1],
+            "post_pt_root_id": [2],
+            "neuropil": ["MB"],
+            "syn_count": [10],
+        })
+        result = assign_dominant_nt(df)
+        assert result.iloc[0]["dominant_nt"] == "unknown"
+
+
+class TestAggregate:
+    def test_aggregates_across_neuropils(self, sample_edges):
+        result = aggregate_by_pair(sample_edges)
+        # Neuron 1→2 appears in MB (10 syn) and AL (5 syn) → total 15
+        pair = result[
+            (result["pre_pt_root_id"] == 1) &
+            (result["post_pt_root_id"] == 2)
+        ]
+        assert len(pair) == 1
+        assert pair.iloc[0]["syn_count"] == 15
+
+    def test_preserves_unique_pairs(self, sample_edges):
+        result = aggregate_by_pair(sample_edges)
+        # 7 edges collapse to 6 unique pairs (1→2 merges)
+        assert len(result) == 6
+
+
+# ---------------------------------------------------------------------------
+# Matrix tests
+# ---------------------------------------------------------------------------
+
+class TestNeuropilSynapseCounts:
+    def test_counts_per_neuropil(self, sample_edges):
+        counts = neuropil_synapse_counts(sample_edges)
+        assert counts["MB"] == 10 + 3 + 2  # three MB edges
+        assert counts["AL"] == 5 + 8
+        assert counts["LH"] == 6 + 1
+
+
+class TestNeuropilConnectivityMatrix:
+    def test_matrix_is_square(self, sample_edges):
+        mat = neuropil_connectivity_matrix(sample_edges)
+        assert mat.shape[0] == mat.shape[1]
+        assert set(mat.index) == set(mat.columns)
+
+    def test_matrix_has_all_neuropils(self, sample_edges):
+        mat = neuropil_connectivity_matrix(sample_edges)
+        assert "MB" in mat.index
+        assert "AL" in mat.index
+        assert "LH" in mat.index
+
+    def test_matrix_values_are_nonnegative(self, sample_edges):
+        mat = neuropil_connectivity_matrix(sample_edges)
+        assert (mat.values >= 0).all()
+
+
+class TestNeuropilNTMatrices:
+    def test_returns_all_nt_types(self, sample_edges):
+        nt_mats = neuropil_nt_matrices(sample_edges)
+        assert "acetylcholine" in nt_mats
+        assert "GABA" in nt_mats
+        assert "glutamate" in nt_mats
+
+    def test_nt_values_are_nonnegative(self, sample_edges):
+        nt_mats = neuropil_nt_matrices(sample_edges)
+        for nt_name, counts in nt_mats.items():
+            assert (counts.values >= 0).all(), f"Negative values in {nt_name}"
+
+
+# ---------------------------------------------------------------------------
+# Pathway tests
+# ---------------------------------------------------------------------------
+
+class TestPathwayStats:
+    def test_returns_all_neuropils(self, sample_edges):
+        stats = pathway_stats(sample_edges)
+        assert "MB" in stats.index
+        assert "AL" in stats.index
+        assert "LH" in stats.index
+
+    def test_correct_edge_counts(self, sample_edges):
+        stats = pathway_stats(sample_edges)
+        assert stats.loc["MB", "n_edges"] == 3  # three edges in MB
+        assert stats.loc["AL", "n_edges"] == 2
+        assert stats.loc["LH", "n_edges"] == 2
+
+    def test_correct_synapse_totals(self, sample_edges):
+        stats = pathway_stats(sample_edges)
+        assert stats.loc["MB", "total_synapses"] == 15
+        assert stats.loc["AL", "total_synapses"] == 13
+        assert stats.loc["LH", "total_synapses"] == 7
+
+
+class TestTopPathways:
+    def test_returns_n_strongest(self, sample_edges):
+        top = top_pathways(sample_edges, n=3)
+        assert len(top) == 3
+        assert top.iloc[0]["syn_count"] == 10  # strongest edge
+
+    def test_n_larger_than_edges(self, sample_edges):
+        top = top_pathways(sample_edges, n=100)
+        assert len(top) == len(sample_edges)
+
+
+class TestConvergenceDivergence:
+    def test_divergence(self, sample_edges):
+        cd = convergence_divergence(sample_edges)
+        div = cd["divergence"]
+        # Neuron 1 sends to neurons 2 and 3 → divergence = 2
+        assert div[1] == 2
+
+    def test_convergence(self, sample_edges):
+        cd = convergence_divergence(sample_edges)
+        conv = cd["convergence"]
+        # Neuron 5 receives from neurons 3 and 4 → convergence = 2
+        assert conv[5] == 2
+
+
+class TestNTPathwayBreakdown:
+    def test_fractions_sum_to_approximately_one(self, sample_edges):
+        breakdown = nt_pathway_breakdown(sample_edges)
+        nt_cols = ["acetylcholine", "GABA", "glutamate",
+                   "octopamine", "serotonin", "dopamine"]
+        present = [c for c in nt_cols if c in breakdown.columns]
+        row_sums = breakdown[present].sum(axis=1)
+        assert all(abs(s - 1.0) < 0.01 for s in row_sums)
+
+    def test_has_all_neuropils(self, sample_edges):
+        breakdown = nt_pathway_breakdown(sample_edges)
+        assert "MB" in breakdown.index
+        assert "AL" in breakdown.index
+#+end_src
+
+* Key Design Decisions
+
+| Decision                              | Rationale                                                                  |
+|---------------------------------------+----------------------------------------------------------------------------|
+| Use aggregated edge list, not full synapse table | 852 MB vs 9.5 GB; sufficient for neuropil-level analysis.    |
+| Default threshold = 5 synapses        | Validated by Dorkenwald et al. 2024; removes 84% spurious edges.           |
+| "Home neuropil" = max presynaptic output | Simple heuristic; avoids needing soma location data.                     |
+| NT classification from probabilities  | Direct from FlyWire ML predictions; 94% neuron-level accuracy.            |
+| Glutamate classified as "mixed"       | Biologically accurate: GluCl (inhibitory) vs ionotropic (excitatory).      |
+| No =networkx= dependency yet          | Plain pandas + scipy.sparse suffice for matrices; graph library for Phase 2.|
+| Synthetic test data, no file I/O      | Tests run instantly, no data download needed.                              |
+
+* Running the Lesson
+
+** Prerequisites
+
+#+begin_src bash :tangle no
+pip install pyarrow  # for feather I/O
+#+end_src
+
+The edge list feather file (852 MB) must be at:
+=data/zenodo/proofread_connections_783.feather=
+
+Download: =wget https://zenodo.org/records/10676866/files/proofread_connections_783.feather=
+
+** Quick exploration
+
+#+begin_src python :tangle no :eval no
+from bravli.connectivity import (
+    load_edges, threshold_edges, assign_dominant_nt,
+    neuropil_synapse_counts, neuropil_connectivity_matrix,
+    pathway_stats, convergence_divergence, nt_pathway_breakdown,
+)
+
+# Load and filter
+edges = load_edges("data/zenodo/proofread_connections_783.feather")
+edges = threshold_edges(edges, min_syn=5)
+edges = assign_dominant_nt(edges)
+
+# Neuropil synapse counts
+counts = neuropil_synapse_counts(edges)
+print(counts.head(10))
+
+# Neuropil × neuropil matrix
+mat = neuropil_connectivity_matrix(edges)
+print(f"Matrix shape: {mat.shape}")
+print(f"Total synapses: {mat.values.sum():,.0f}")
+
+# Pathway statistics
+stats = pathway_stats(edges)
+print(stats.head(10))
+
+# Convergence / divergence
+cd = convergence_divergence(edges)
+print(f"Mean divergence: {cd['divergence'].mean():.1f}")
+print(f"Mean convergence: {cd['convergence'].mean():.1f}")
+
+# NT breakdown per neuropil
+nt = nt_pathway_breakdown(edges)
+print(nt[["acetylcholine", "GABA", "glutamate"]].head(10))
+#+end_src
+
+** Tests
+
+#+begin_src bash :tangle no
+pytest tests/test_connectivity.py -v
+#+end_src
+
+* Exercises for the Reader
+
+1. *Reciprocity*: For each neuropil, what fraction of connections are reciprocated
+   (i.e., if A→B exists with $\geq 5$ syn, does B→A also exist)? Is reciprocity
+   higher in some neuropils than others?
+
+2. *E/I balance*: Using the NT breakdown, compute the excitation/inhibition ratio
+   (ACh + glutamate vs GABA) per neuropil. Which neuropils are most inhibitory?
+
+3. *Hub neurons*: Find the 20 neurons with the highest divergence (most post-synaptic
+   partners). Look them up in the annotation TSV — what cell types are they? Are they
+   known hub cell types?
+
+4. *Mushroom body circuit*: Filter edges to only those where both pre and post neurons
+   are in MB-related neuropils (=MB_CA_R=, =MB_PED_R=, =MB_VL_R=, etc.). Build a
+   sub-matrix. Does it match the known KC→MBON→DAN circuit architecture?
+
+5. *Community detection*: (Requires =networkx=) Build a graph from the neuropil
+   connectivity matrix and run Louvain community detection. Do the detected communities
+   correspond to known functional systems (olfactory, visual, motor)?
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 08-connectivity
+tag: lesson/08-connectivity
+files_created:
+  - bravli/connectivity/__init__.py
+  - bravli/connectivity/edges.py
+  - bravli/connectivity/matrix.py
+  - bravli/connectivity/pathways.py
+  - tests/test_connectivity.py
+verification:
+  - "python -c 'from bravli.connectivity import load_edges, neuropil_connectivity_matrix' succeeds"
+  - "pytest tests/test_connectivity.py -v — all tests pass"
+data_required:
+  - data/zenodo/proofread_connections_783.feather (852 MB, Zenodo 10676866)
+dependencies:
+  - pyarrow (feather I/O)
+  - scipy (sparse matrices)
+next_lesson: 09-synaptic-physiology
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:
