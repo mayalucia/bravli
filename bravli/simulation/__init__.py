@@ -30,5 +30,8 @@ from .analysis import (
     spike_raster,
     ei_balance,
     active_fraction,
+    population_sparseness,
+    lifetime_sparseness,
+    active_fraction_by_group,
     population_rate,
 )

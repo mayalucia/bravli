@@ -137,6 +137,109 @@ def active_fraction(result, threshold_hz=1.0, time_window=None):
     return np.mean(rates > threshold_hz)
 
 
+def population_sparseness(rates):
+    """Compute Treves-Rolls population sparseness.
+
+    S = (mean(r))^2 / mean(r^2)
+
+    S = 1 means all neurons fire at the same rate (dense).
+    S -> 1/N means exactly one neuron fires (maximally sparse).
+
+    Parameters
+    ----------
+    rates : np.ndarray
+        Per-neuron firing rates (Hz). Shape (n_neurons,).
+
+    Returns
+    -------
+    float
+        Sparseness in [0, 1]. Lower = sparser.
+    """
+    rates = np.asarray(rates, dtype=np.float64)
+    if len(rates) == 0:
+        return 0.0
+    mean_r = np.mean(rates)
+    mean_r2 = np.mean(rates ** 2)
+    if mean_r2 == 0:
+        return 0.0
+    return (mean_r ** 2) / mean_r2
+
+
+def lifetime_sparseness(result, neuron_indices=None, bin_ms=50.0):
+    """Per-neuron lifetime sparseness across time bins.
+
+    For each neuron, computes Treves-Rolls sparseness over its
+    binned spike count vector. A neuron that fires uniformly in
+    all bins has S=1; one that fires in a single bin has S~1/N_bins.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    neuron_indices : array-like, optional
+        Subset of neurons. If None, all neurons.
+    bin_ms : float
+        Time bin width (ms).
+
+    Returns
+    -------
+    np.ndarray
+        Per-neuron lifetime sparseness.
+    """
+    if neuron_indices is None:
+        neuron_indices = range(result.n_neurons)
+    neuron_indices = np.asarray(neuron_indices)
+
+    n_bins = max(1, int(result.duration / bin_ms))
+    sparsenesses = np.zeros(len(neuron_indices))
+
+    for j, i in enumerate(neuron_indices):
+        st = result.spike_times[i]
+        if len(st) == 0:
+            sparsenesses[j] = 0.0
+            continue
+        bins = np.clip((st / bin_ms).astype(int), 0, n_bins - 1)
+        counts = np.bincount(bins, minlength=n_bins).astype(np.float64)
+        mean_c = np.mean(counts)
+        mean_c2 = np.mean(counts ** 2)
+        if mean_c2 == 0:
+            sparsenesses[j] = 0.0
+        else:
+            sparsenesses[j] = (mean_c ** 2) / mean_c2
+
+    return sparsenesses
+
+
+def active_fraction_by_group(result, groups, threshold_hz=1.0):
+    """Fraction of neurons active per named group.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    groups : dict of str -> array-like
+        Mapping from group name to neuron indices.
+    threshold_hz : float
+        Minimum rate to count as "active".
+
+    Returns
+    -------
+    dict
+        Group name -> (n_active, n_total, fraction).
+    """
+    rates = firing_rates(result)
+    out = {}
+    for name, indices in groups.items():
+        indices = np.asarray(indices)
+        if len(indices) == 0:
+            out[name] = (0, 0, 0.0)
+            continue
+        group_rates = rates[indices]
+        n_active = int(np.sum(group_rates > threshold_hz))
+        out[name] = (n_active, len(indices), n_active / len(indices))
+    return out
+
+
 def population_rate(result, bin_ms=10.0):
     """Compute population-averaged firing rate over time.
 

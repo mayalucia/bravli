@@ -53,6 +53,7 @@ def build_portal(annotations=None, edges=None, circuit=None,
         composition_view,
         connectivity_view,
         physiology_view,
+        mb_view,
         simulate_view,
     )
 
@@ -85,6 +86,7 @@ def build_portal(annotations=None, edges=None, circuit=None,
 
     tabs.append(("Connectivity", connectivity_view(edges=edges)))
     tabs.append(("Physiology", physiology_view(edges=edges)))
+    tabs.append(("Mushroom Body", mb_view(annotations=annotations, edges=edges)))
     tabs.append(("Simulate", simulate_view(circuit=circuit)))
 
     portal = pn.Tabs(*tabs, sizing_mode="stretch_both")

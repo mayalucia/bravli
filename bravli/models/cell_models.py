@@ -248,7 +248,34 @@ CELL_MODEL_DB.register(
         notes="Antennal lobe PNs. V_rest from cell-attached recording. "
               "R_input=598+/-69 MOhm. C_m fitted: 0.8-2.6 uF/cm^2.",
     ),
-    cell_classes=["PN"],
+    cell_classes=["PN", "ALPN"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="mbon",
+        v_rest=-55.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=15.0, t_ref=2.0, c_m=10.0, r_input=400.0,
+        confidence=MEDIUM,
+        source="Hige et al. 2015, Neuron 88:985; Aso et al. 2014, eLife 3:e04577",
+        notes="Mushroom body output neurons. Moderate time constant, "
+              "receive sparse KC input. Parameters estimated from "
+              "whole-cell recordings in Hige et al.",
+    ),
+    cell_classes=["MBON"],
+)
+
+CELL_MODEL_DB.register(
+    LIFParams(
+        name="dan",
+        v_rest=-55.0, v_thresh=-45.0, v_reset=-55.0,
+        tau_m=20.0, t_ref=2.0, c_m=8.0, r_input=500.0,
+        confidence=LOW,
+        source="Estimated from dopaminergic neuron literature",
+        notes="Dopaminergic neurons. Carry reinforcement signals to MB. "
+              "Parameters are defaults — sparse electrophysiology data.",
+    ),
+    cell_classes=["DAN"],
 )
 
 CELL_MODEL_DB.register(
@@ -261,7 +288,7 @@ CELL_MODEL_DB.register(
         notes="Mushroom body Kenyon cells. Very high R_input (1.36 GOhm), "
               "tiny C_m (3.6 pF). tau_m estimated from R*C.",
     ),
-    cell_classes=["KC"],
+    cell_classes=["KC", "Kenyon_Cell"],
 )
 
 CELL_MODEL_DB.register(

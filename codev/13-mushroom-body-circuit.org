@@ -1,0 +1,975 @@
+#+title: Lesson 13 — Mushroom Body Microcircuit
+#+subtitle: Does sparse coding emerge from wiring alone?
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+In Lesson 05 we explored the mushroom body's /anatomy/ — neuron counts, cell types,
+neurotransmitter profiles.  In Lessons 08–11 we built the full simulation pipeline —
+connectivity, physiology, cell models, LIF engine.  Now we close the loop.
+
+This lesson extracts the mushroom body as a self-contained microcircuit from the
+whole-brain connectome, simulates odor presentation, and asks the question that
+matters:
+
+#+begin_quote
+Does the experimentally observed ~5-10% Kenyon cell sparseness emerge from the
+connectome wiring alone?
+#+end_quote
+
+This is not a toy question.  Sparse coding in the MB is the computational substrate
+of pattern separation — the ability to represent similar odors as dissimilar neural
+patterns, which is a prerequisite for associative learning.  If sparseness emerges
+from wiring, then the /structure is the computation/ — the decades of evolution that
+shaped PN→KC convergence/divergence have already done the hard work.  If it doesn't,
+then dynamical mechanisms (APL feedback inhibition, intrinsic KC properties, synaptic
+depression) are doing something the anatomy cannot.
+
+Either answer teaches us something.  Both together teach us more.
+
+** The mushroom body circuit
+
+The fly mushroom body is one of the best-characterized neural circuits in any
+organism.  The wiring diagram (Aso et al. 2014; Li et al. 2020; Schlegel et al.
+2021) follows a clear feedforward architecture with recurrent modulation:
+
+#+begin_example
+         Olfactory input
+              │
+    ┌─────────▼──────────┐
+    │  ~685 ALPNs (PNs)  │   Antennal lobe projection neurons
+    │  Divergent output   │   Each PN contacts ~50% of KCs
+    └─────────┬──────────┘
+              │  PN→KC: ~10 PNs per KC (convergence)
+              │          ~2,600 KCs per PN (divergence)
+    ┌─────────▼──────────┐
+    │  ~5,200 KCs        │   Kenyon cells — sparse odor code
+    │  Only 5-10% active │   Coincidence detectors (tau_m ≈ 5 ms)
+    └──┬──────┬──────┬───┘
+       │      │      │
+       │      │      └──────► APL (1 neuron, GABAergic)
+       │      │                 Global feedback inhibition
+       │      │                 KC→APL→KC normalizes activity
+       │      │
+       │    ┌─▼──────────┐
+       │    │  ~330 DANs  │   Dopaminergic neurons
+       │    │  PPL1, PAM  │   Reward/punishment signals
+       │    └─┬───────────┘
+       │      │ compartment-specific modulation
+    ┌──▼──────▼──────────┐
+    │  ~100 MBONs        │   Mushroom body output neurons
+    │  Drive behavior    │   Approach (cholinergic) or avoid (glutamatergic)
+    └────────────────────┘
+#+end_example
+
+Three features make the MB ideal for our first simulation experiment:
+
+1. *Small enough to understand.*  ~6,300 neurons total (with PNs).  The whole
+   simulation fits in RAM and runs in seconds.
+
+2. *Clear prediction.*  Decades of experiments (Turner et al. 2008; Honegger et al.
+   2011) show KC population sparseness of 5-10%.  We can compute this from our
+   simulation and compare directly.
+
+3. *Mechanistic levers.*  We can ablate APL (remove feedback inhibition), change
+   PN drive rates, vary odor complexity — each manipulation probes a different
+   aspect of the sparse coding mechanism.
+
+** The sparseness metric
+
+We use the Treves-Rolls population sparseness (Treves & Rolls 1991):
+
+\begin{equation}
+S = \frac{\left(\frac{1}{N} \sum_i r_i\right)^2}{\frac{1}{N} \sum_i r_i^2}
+\end{equation}
+
+where $r_i$ is the firing rate of neuron $i$ and $N$ is the population size.
+
+- $S = 1$: all neurons fire at the same rate (maximally dense)
+- $S = 1/N$: exactly one neuron fires (maximally sparse)
+- $S = 0$: no neurons fire (silent)
+
+For 5,200 KCs with 5-10% active, we expect $S \approx 0.05 - 0.10$.
+
+This is not the only sparseness measure — Willmore & Tolhurst (2001) catalog
+several — but Treves-Rolls is standard in the MB literature and has a clean
+information-theoretic interpretation: it approximates the fraction of the
+population carrying the signal.
+
+** Learning objectives
+
+- [ ] Understand the MB circuit architecture and its computational role
+- [ ] Extract a simulation-ready subcircuit from the whole-brain connectome
+- [ ] Simulate odor presentation with biologically plausible parameters
+- [ ] Measure population sparseness and compare to experimental values
+- [ ] Explore the portal's MB tab for interactive parameter exploration
+
+** File map
+
+| File                            | Role                                  | Tangled from |
+|---------------------------------+---------------------------------------+--------------|
+| =bravli/simulation/analysis.py= | Sparseness metrics (extended)        | this file    |
+| =bravli/explore/mushroom_body.py= | Circuit extraction + simulation    | this file    |
+| =bravli/portal/views.py=       | MB portal view (mb_view)              | this file    |
+| =tests/test_mb_circuit.py=     | 23 tests for MB circuit               | this file    |
+
+* The Science: Why Sparseness Matters
+
+** Pattern separation through expansion coding
+
+The mushroom body implements a classical computational motif: expansion recoding.
+~685 PNs project onto ~5,200 KCs — a ~8× expansion in dimensionality.  Each KC
+samples from ~10 random PNs (Caron et al. 2013 showed the PN→KC connectivity is
+approximately random, not structured by odor tuning).
+
+Random high-dimensional projection followed by thresholding is known to produce
+sparse, decorrelated representations — this is the core of the /random indexing/
+framework (Kanerva 1988), locality-sensitive hashing (Dasgupta et al. 2017), and
+the fly's olfactory system (Dasgupta et al. 2017, Science).
+
+The key parameters are:
+- *Expansion ratio* (N_KC / N_PN ≈ 8): higher → sparser
+- *Input convergence* (~10 PNs per KC): lower → sparser (need more coincidences)
+- *Threshold* (set by APL feedback + intrinsic properties): higher → sparser
+- *Inhibition* (APL provides divisive normalization): stronger → sparser
+
+** The coincidence detection hypothesis
+
+KCs have unusually fast membrane dynamics: $\tau_m \approx 5$ ms (Demmer & Bhatt
+2004; Hige et al. 2015), compared to $\tau_m \approx 20$ ms for a generic central
+neuron (the Shiu uniform model).  A fast time constant means the membrane voltage
+tracks input closely — the KC is a /coincidence detector/, not an /integrator/.
+
+For a KC to spike, multiple PNs must fire within a ~5 ms window.  If PN firing
+is asynchronous (which it approximately is during the steady-state odor response),
+only KCs that happen to receive convergent input from simultaneously active PNs
+will reach threshold.  This temporal gating is another source of sparseness, and
+it depends on the biophysical model — a uniform $\tau_m = 20$ ms KC would integrate
+over longer windows and fire more readily.
+
+This is why our Phase 3 class-aware cell models matter.  The KC model ($\tau_m = 5$
+ms, $R_{input} = 1.36$ G$\Omega$, from Demmer & Bhatt 2004) is biophysically
+different from the Shiu uniform model.  The question is whether this difference
+changes the sparseness outcome — and by how much.
+
+** APL: the great normalizer
+
+APL (anterior paired lateral) is a single giant GABAergic interneuron whose
+dendrites span the entire MB calyx and lobes.  It receives excitatory input from
+KCs and provides feedback inhibition to all KCs.  This creates a negative feedback
+loop: more KC activity → more APL activity → more KC inhibition.
+
+The effect is /divisive normalization/ — APL scales down KC activity by an amount
+proportional to the total KC population activity.  This keeps the active fraction
+roughly constant regardless of odor intensity or complexity (Lin et al. 2014).
+
+In the FlyWire connectome, APL is classified as MBIN (mushroom body input neuron)
+with cell_type containing "APL".  We tag it with circuit_role="APL" for separate
+analysis.
+
+* Implementation
+
+** Sparseness metrics — analysis.py extensions
+
+These functions extend the simulation analysis module with population-level
+sparseness measures appropriate for the MB sparse coding question.
+
+#+begin_src python :tangle no
+# --- Added to bravli/simulation/analysis.py ---
+
+def population_sparseness(rates):
+    """Compute Treves-Rolls population sparseness.
+
+    S = (mean(r))^2 / mean(r^2)
+
+    S = 1 means all neurons fire at the same rate (dense).
+    S -> 1/N means exactly one neuron fires (maximally sparse).
+
+    Parameters
+    ----------
+    rates : np.ndarray
+        Per-neuron firing rates (Hz). Shape (n_neurons,).
+
+    Returns
+    -------
+    float
+        Sparseness in [0, 1]. Lower = sparser.
+    """
+    rates = np.asarray(rates, dtype=np.float64)
+    if len(rates) == 0:
+        return 0.0
+    mean_r = np.mean(rates)
+    mean_r2 = np.mean(rates ** 2)
+    if mean_r2 == 0:
+        return 0.0
+    return (mean_r ** 2) / mean_r2
+
+
+def lifetime_sparseness(result, neuron_indices=None, bin_ms=50.0):
+    """Per-neuron lifetime sparseness across time bins.
+
+    For each neuron, computes Treves-Rolls sparseness over its
+    binned spike count vector. A neuron that fires uniformly in
+    all bins has S=1; one that fires in a single bin has S~1/N_bins.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    neuron_indices : array-like, optional
+        Subset of neurons. If None, all neurons.
+    bin_ms : float
+        Time bin width (ms).
+
+    Returns
+    -------
+    np.ndarray
+        Per-neuron lifetime sparseness.
+    """
+    if neuron_indices is None:
+        neuron_indices = range(result.n_neurons)
+    neuron_indices = np.asarray(neuron_indices)
+
+    n_bins = max(1, int(result.duration / bin_ms))
+    sparsenesses = np.zeros(len(neuron_indices))
+
+    for j, i in enumerate(neuron_indices):
+        st = result.spike_times[i]
+        if len(st) == 0:
+            sparsenesses[j] = 0.0
+            continue
+        bins = np.clip((st / bin_ms).astype(int), 0, n_bins - 1)
+        counts = np.bincount(bins, minlength=n_bins).astype(np.float64)
+        mean_c = np.mean(counts)
+        mean_c2 = np.mean(counts ** 2)
+        if mean_c2 == 0:
+            sparsenesses[j] = 0.0
+        else:
+            sparsenesses[j] = (mean_c ** 2) / mean_c2
+
+    return sparsenesses
+
+
+def active_fraction_by_group(result, groups, threshold_hz=1.0):
+    """Fraction of neurons active per named group.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    groups : dict of str -> array-like
+        Mapping from group name to neuron indices.
+    threshold_hz : float
+        Minimum rate to count as "active".
+
+    Returns
+    -------
+    dict
+        Group name -> (n_active, n_total, fraction).
+    """
+    rates = firing_rates(result)
+    out = {}
+    for name, indices in groups.items():
+        indices = np.asarray(indices)
+        if len(indices) == 0:
+            out[name] = (0, 0, 0.0)
+            continue
+        group_rates = rates[indices]
+        n_active = int(np.sum(group_rates > threshold_hz))
+        out[name] = (n_active, len(indices), n_active / len(indices))
+    return out
+#+end_src
+
+** MB circuit extraction — mushroom_body.py extensions
+
+The core addition: functions to extract the MB as a simulation-ready subcircuit
+from the full connectome, simulate odor presentation, and analyze sparseness.
+
+*** Constants and cell class mapping
+
+FlyWire uses specific cell_class names that differ from common abbreviations:
+
+| Common name | FlyWire cell_class | Our circuit_role |
+|-------------+--------------------+------------------|
+| KC          | Kenyon_Cell        | KC               |
+| PN          | ALPN               | PN               |
+| MBON        | MBON               | MBON             |
+| DAN         | DAN                | DAN              |
+| APL         | MBIN (cell_type)   | APL              |
+| Other MBIN  | MBIN               | MBIN             |
+
+Note the subtlety: APL is /classified/ as MBIN (it's an input neuron to the MB)
+but /functions/ as a feedback inhibitor.  We tag it separately because its role in
+the circuit is qualitatively different from other MBINs.
+
+#+begin_src python :tangle no
+# --- Constants in bravli/explore/mushroom_body.py ---
+
+MB_CELL_CLASSES = ["Kenyon_Cell", "MBON", "MBIN", "DAN"]
+MB_AFFERENT_CLASSES = ["ALPN"]
+MB_ALL_CLASSES = MB_CELL_CLASSES + MB_AFFERENT_CLASSES
+#+end_src
+
+*** Circuit extraction
+
+#+begin_src python :tangle no
+def extract_mb_circuit(annotations, edges, include_afferents=True):
+    """Extract mushroom body neurons and their internal connectivity.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        Full FlyWire annotation table.
+    edges : pd.DataFrame
+        Processed edge table with columns: pre_pt_root_id,
+        post_pt_root_id, syn_count, weight, dominant_nt.
+    include_afferents : bool
+        If True, include ALPNs (projection neurons) as input layer.
+
+    Returns
+    -------
+    mb_neurons : pd.DataFrame
+        MB neuron annotations with added 'circuit_role' column.
+    mb_edges : pd.DataFrame
+        Edges internal to the MB circuit.
+    """
+    # Select cell classes
+    classes = MB_ALL_CLASSES if include_afferents else MB_CELL_CLASSES
+    mask = annotations["cell_class"].isin(classes)
+    mb_neurons = annotations[mask].copy()
+
+    # Assign circuit roles
+    role_map = {
+        "Kenyon_Cell": "KC",
+        "MBON": "MBON",
+        "MBIN": "MBIN",
+        "DAN": "DAN",
+        "ALPN": "PN",
+    }
+    mb_neurons["circuit_role"] = mb_neurons["cell_class"].map(role_map)
+
+    # Tag APL specifically (it's MBIN but functionally distinct)
+    apl_mask = mb_neurons["cell_type"].str.contains("APL", na=False)
+    mb_neurons.loc[apl_mask, "circuit_role"] = "APL"
+
+    # Filter edges to MB-internal connections
+    mb_ids = set(mb_neurons["root_id"].values)
+    edge_mask = (edges["pre_pt_root_id"].isin(mb_ids) &
+                 edges["post_pt_root_id"].isin(mb_ids))
+    mb_edges = edges[edge_mask].copy()
+
+    return mb_neurons, mb_edges
+#+end_src
+
+*** Circuit construction
+
+#+begin_src python :tangle no
+def build_mb_circuit(annotations, edges, mode="class_aware", dt=0.1):
+    """Build a simulation-ready Circuit for the mushroom body.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        Full FlyWire annotation table.
+    edges : pd.DataFrame
+        Processed edge table (with weights assigned).
+    mode : str
+        Cell model assignment mode: "class_aware" or "uniform".
+    dt : float
+        Simulation timestep (ms).
+
+    Returns
+    -------
+    circuit : Circuit
+        Simulation-ready circuit.
+    mb_neurons : pd.DataFrame
+        MB neuron annotations with circuit_role and model params.
+    mb_edges : pd.DataFrame
+        MB-internal edges.
+    """
+    from bravli.models import assign_cell_models
+    from bravli.simulation import build_circuit
+
+    mb_neurons, mb_edges = extract_mb_circuit(annotations, edges)
+    mb_neurons_with_models = assign_cell_models(mb_neurons, mode=mode)
+    circuit = build_circuit(mb_neurons_with_models, mb_edges, dt=dt)
+
+    return circuit, mb_neurons_with_models, mb_edges
+#+end_src
+
+*** Odor simulation
+
+The simulation protocol models odor presentation as Poisson input to a random
+subset of PNs.  This is biologically grounded: in the antennal lobe, each odor
+activates a specific ensemble of PNs (typically 10-30% of the population) with
+firing rates in the 20-50 Hz range during the steady-state odor response
+(Wilson et al. 2004; Bhandawat et al. 2007).
+
+We use =odor_fraction= to control what fraction of PNs represent the odor, and
+=pn_rate_hz= to set the Poisson firing rate of activated PNs.  Each trial draws
+a different random set of PNs — representing different odors.
+
+#+begin_src python :tangle no
+def simulate_odor_presentation(circuit, mb_neurons, duration_ms=500.0,
+                                odor_fraction=0.1, pn_rate_hz=50.0,
+                                pn_weight=68.75, n_trials=1, seed=42):
+    """Simulate odor presentation to the MB circuit.
+
+    An "odor" activates a random fraction of PNs with Poisson input.
+    KCs receive convergent PN input through the connectome wiring.
+    The question: does sparse KC activation emerge?
+
+    Parameters
+    ----------
+    circuit : Circuit
+        MB circuit (from build_mb_circuit).
+    mb_neurons : pd.DataFrame
+        MB neuron annotations with 'circuit_role' column.
+    duration_ms : float
+        Simulation duration (ms).
+    odor_fraction : float
+        Fraction of PNs activated (0-1). Typical odors activate ~10-30%.
+    pn_rate_hz : float
+        Firing rate of activated PNs (Hz). AL oscillation: ~20-50 Hz.
+    pn_weight : float
+        Weight of external Poisson spikes (mV).
+    n_trials : int
+        Number of trials with different random odor patterns.
+    seed : int
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    list of dict
+        Per-trial results with 'result', 'sparseness',
+        'kc_active_fraction', 'group_activity', etc.
+    """
+    from bravli.simulation import simulate, poisson_stimulus
+    from bravli.simulation.analysis import (
+        firing_rates, population_sparseness, active_fraction_by_group,
+    )
+
+    groups = neuron_groups(circuit, mb_neurons)
+    pn_indices = groups.get("PN", np.array([], dtype=np.int32))
+
+    rng = np.random.RandomState(seed)
+    n_active_pns = max(1, int(odor_fraction * len(pn_indices)))
+    n_steps = int(duration_ms / 0.1)
+
+    trials = []
+    for trial in range(n_trials):
+        active_pn_indices = rng.choice(pn_indices, size=n_active_pns,
+                                        replace=False)
+
+        stim, protocol = poisson_stimulus(
+            circuit.n_neurons, n_steps, active_pn_indices,
+            rate_hz=pn_rate_hz, weight=pn_weight,
+            seed=seed + trial,
+        )
+
+        result = simulate(circuit, duration=duration_ms, dt=0.1,
+                         stimulus=stim, record_v=True,
+                         record_idx=list(range(min(20, circuit.n_neurons))))
+
+        kc_indices = groups.get("KC", np.array([], dtype=np.int32))
+        rates = firing_rates(result)
+        kc_rates = rates[kc_indices] if len(kc_indices) > 0 else np.array([])
+        sparseness = population_sparseness(kc_rates)
+        group_activity = active_fraction_by_group(result, groups)
+
+        kc_active = group_activity.get("KC", (0, 0, 0.0))
+
+        trials.append({
+            "result": result,
+            "active_pns": active_pn_indices,
+            "groups": groups,
+            "sparseness": sparseness,
+            "kc_active_fraction": kc_active[2],
+            "kc_mean_rate": float(np.mean(kc_rates)) if len(kc_rates) > 0 else 0.0,
+            "group_activity": group_activity,
+            "rates": rates,
+        })
+
+    return trials
+#+end_src
+
+** Cell models: why heterogeneity matters
+
+In Lesson 10 we registered cell models for different neuron classes.  For the MB
+circuit, the critical registrations are:
+
+| Model | cell_class | tau_m (ms) | R_input | Source |
+|-------+------------+------------+---------+--------|
+| kenyon_cell | KC, Kenyon_Cell | 5.0 | 1.36 GOhm | Demmer & Bhatt 2004 |
+| projection_neuron | PN, ALPN | 10.0 | 200 MOhm | Wilson et al. 2004 |
+| mbon | MBON | 15.0 | 400 MOhm | Hige et al. 2015 |
+| dan | DAN | 20.0 | 500 MOhm | Estimated |
+| central_default | (fallback) | 20.0 | 200 MOhm | Shiu et al. 2024 |
+
+The KC model is the outlier: $\tau_m = 5$ ms is 4× faster than the Shiu uniform
+value.  This makes KCs coincidence detectors — they respond to synchronized input
+arriving within a ~5 ms window, but ignore the same total input spread over 20 ms.
+
+With the Shiu uniform model ($\tau_m = 20$ ms for all neurons), KCs would integrate
+over longer windows.  More integration means more opportunities for enough excitatory
+input to accumulate, which means more KCs cross threshold, which means /less sparse/
+representations.  The class-aware model should produce /sparser/ KC activity than the
+uniform model — a testable prediction.
+
+** Portal view: interactive MB exploration
+
+The portal's "Mushroom Body" tab provides interactive control over the simulation
+parameters:
+
+- *Odor fraction slider* (5-50%): what fraction of PNs are activated
+- *PN firing rate slider* (10-100 Hz): how strongly PNs fire
+- *Duration slider* (100-1000 ms): simulation length
+- *Trials slider* (1-5): how many random odor patterns
+
+After running, the tab shows:
+- Sparseness readout with scientific interpretation
+- Spike raster color-coded by circuit role (KC=blue, PN=gray, MBON=orange,
+  DAN=green, MBIN=purple, APL=red)
+- Population rate traces per group
+- Active fraction bar chart with 10% target line
+
+#+begin_src python :tangle no
+# --- In bravli/portal/views.py ---
+
+def mb_view(annotations=None, edges=None):
+    """Build the mushroom body microcircuit tab.
+
+    Allows interactive exploration of the MB sparse coding question:
+    does ~5-10% KC sparseness emerge from wiring alone?
+
+    The view builds the MB circuit on load (extracting ~6,300 neurons
+    from the full connectome), then provides sliders for odor fraction,
+    PN drive rate, and simulation duration.
+
+    After simulation, displays:
+    - KC population sparseness (Treves-Rolls)
+    - KC active fraction with interpretation
+    - Role-colored spike raster
+    - Per-group population rate traces
+    - Active fraction bar chart with experimental target
+    """
+    # ... (see bravli/portal/views.py for full implementation)
+#+end_src
+
+* Tests
+
+23 tests covering sparseness metrics, circuit extraction, circuit construction,
+neuron group mapping, odor simulation, and report generation.
+
+#+begin_src python :tangle ../tests/test_mb_circuit.py
+"""Tests for mushroom body microcircuit extraction and simulation.
+
+Tests use real FlyWire data when available (via conftest fixtures from
+the bravli test suite) and synthetic data for unit tests of analysis
+functions.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from bravli.simulation.analysis import (
+    population_sparseness,
+    lifetime_sparseness,
+    active_fraction_by_group,
+    firing_rates,
+)
+from bravli.simulation.engine import SimulationResult
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def annotations():
+    """Load real FlyWire annotations."""
+    from bravli.parcellation.load_flywire import load_flywire_annotations
+    from pathlib import Path
+    search = [
+        Path("data/flywire_annotations"),
+        Path("../data/flywire_annotations"),
+        Path.home() / "Darshan/research/develop/agentic/mayalucia/bravli/code/bravli/data/flywire_annotations",
+    ]
+    for base in search:
+        if base.is_dir():
+            tsvs = list(base.glob("*.tsv"))
+            if tsvs:
+                return pd.read_csv(tsvs[0], sep="\t")
+    pytest.skip("FlyWire annotations not found")
+
+
+@pytest.fixture
+def edges():
+    """Load and process real FlyWire edges."""
+    from bravli.connectivity import (
+        load_edges, threshold_edges, assign_dominant_nt, aggregate_by_pair,
+    )
+    from bravli.physiology import assign_synapse_models, compute_synaptic_weights
+    from pathlib import Path
+    search = [
+        Path("data/zenodo/proofread_connections_783.feather"),
+        Path("../data/zenodo/proofread_connections_783.feather"),
+        Path.home() / "Darshan/research/develop/agentic/mayalucia/bravli/code/bravli/data/zenodo/proofread_connections_783.feather",
+    ]
+    for path in search:
+        if path.exists():
+            e = load_edges(path)
+            e = threshold_edges(e, min_syn=5)
+            e = assign_dominant_nt(e)
+            e = aggregate_by_pair(e)
+            e = assign_dominant_nt(e)
+            e = assign_synapse_models(e, mode="shiu")
+            e = compute_synaptic_weights(e, mode="shiu")
+            return e
+    pytest.skip("Edge feather file not found")
+
+
+@pytest.fixture
+def mb_data(annotations, edges):
+    """Extract MB circuit data."""
+    from bravli.explore.mushroom_body import extract_mb_circuit
+    return extract_mb_circuit(annotations, edges)
+
+
+@pytest.fixture
+def mb_circuit(annotations, edges):
+    """Build MB simulation circuit."""
+    from bravli.explore.mushroom_body import build_mb_circuit
+    return build_mb_circuit(annotations, edges)
+
+
+# ---------------------------------------------------------------------------
+# Sparseness metric tests
+# ---------------------------------------------------------------------------
+
+class TestSparseness:
+    def test_population_sparseness_uniform(self):
+        """Uniform rates -> S = 1."""
+        rates = np.ones(100) * 10.0
+        assert abs(population_sparseness(rates) - 1.0) < 1e-10
+
+    def test_population_sparseness_one_hot(self):
+        """Single active neuron -> S = 1/N."""
+        rates = np.zeros(100)
+        rates[42] = 50.0
+        s = population_sparseness(rates)
+        assert abs(s - 1.0 / 100.0) < 1e-10
+
+    def test_population_sparseness_empty(self):
+        assert population_sparseness(np.array([])) == 0.0
+
+    def test_population_sparseness_all_zero(self):
+        assert population_sparseness(np.zeros(50)) == 0.0
+
+    def test_population_sparseness_two_active(self):
+        """Two equal neurons out of 100 -> S = 2/100 = 0.02."""
+        rates = np.zeros(100)
+        rates[10] = 30.0
+        rates[20] = 30.0
+        s = population_sparseness(rates)
+        assert abs(s - 0.02) < 1e-10
+
+    def test_active_fraction_by_group(self):
+        """Active fraction with synthetic result."""
+        spike_times = [
+            np.array([10.0, 20.0]),   # active
+            np.array([]),              # silent
+            np.array([5.0]),           # active
+            np.array([]),              # silent
+        ]
+        result = SimulationResult(
+            spike_times=spike_times, dt=0.1, duration=100.0, n_neurons=4,
+        )
+        groups = {"A": np.array([0, 1]), "B": np.array([2, 3])}
+        ga = active_fraction_by_group(result, groups, threshold_hz=1.0)
+        assert ga["A"] == (1, 2, 0.5)
+        assert ga["B"] == (1, 2, 0.5)
+
+
+# ---------------------------------------------------------------------------
+# Circuit extraction tests (require real data)
+# ---------------------------------------------------------------------------
+
+class TestExtractMBCircuit:
+    def test_extracts_correct_classes(self, mb_data):
+        mb_neurons, mb_edges = mb_data
+        classes = set(mb_neurons["cell_class"].unique())
+        expected = {"Kenyon_Cell", "MBON", "MBIN", "DAN", "ALPN"}
+        assert classes == expected
+
+    def test_circuit_role_assigned(self, mb_data):
+        mb_neurons, _ = mb_data
+        assert "circuit_role" in mb_neurons.columns
+        roles = set(mb_neurons["circuit_role"].unique())
+        assert "KC" in roles
+        assert "PN" in roles
+
+    def test_apl_tagged(self, mb_data):
+        mb_neurons, _ = mb_data
+        apl = mb_neurons[mb_neurons["circuit_role"] == "APL"]
+        assert len(apl) > 0
+        assert all(apl["cell_type"].str.contains("APL", na=False))
+
+    def test_edges_are_internal(self, mb_data):
+        mb_neurons, mb_edges = mb_data
+        mb_ids = set(mb_neurons["root_id"].values)
+        assert all(mb_edges["pre_pt_root_id"].isin(mb_ids))
+        assert all(mb_edges["post_pt_root_id"].isin(mb_ids))
+
+    def test_no_cx_edges(self, mb_data, annotations):
+        """No edges should involve central complex neurons."""
+        mb_neurons, mb_edges = mb_data
+        cx = annotations[annotations["cell_class"].isin(["CX"])]
+        if len(cx) > 0:
+            cx_ids = set(cx["root_id"].values)
+            assert not any(mb_edges["pre_pt_root_id"].isin(cx_ids))
+            assert not any(mb_edges["post_pt_root_id"].isin(cx_ids))
+
+    def test_pn_to_kc_edges_exist(self, mb_data):
+        mb_neurons, mb_edges = mb_data
+        id_to_role = dict(zip(mb_neurons["root_id"], mb_neurons["circuit_role"]))
+        pre_roles = mb_edges["pre_pt_root_id"].map(id_to_role)
+        post_roles = mb_edges["post_pt_root_id"].map(id_to_role)
+        pn_kc = ((pre_roles == "PN") & (post_roles == "KC")).sum()
+        assert pn_kc > 0, "Expected PN->KC edges in MB circuit"
+
+
+class TestMBCircuitStats:
+    def test_stats_structure(self, mb_data):
+        from bravli.explore.mushroom_body import mb_circuit_stats
+        mb_neurons, mb_edges = mb_data
+        stats = mb_circuit_stats(mb_neurons, mb_edges)
+        assert "neuron_counts" in stats
+        assert "pathway_counts" in stats
+        assert "pathway_synapses" in stats
+
+    def test_pn_kc_pathway(self, mb_data):
+        from bravli.explore.mushroom_body import mb_circuit_stats
+        mb_neurons, mb_edges = mb_data
+        stats = mb_circuit_stats(mb_neurons, mb_edges)
+        assert "PN -> KC" in stats["pathway_counts"]
+
+
+class TestBuildMBCircuit:
+    def test_builds_circuit(self, mb_circuit):
+        circuit, mb_neurons, mb_edges = mb_circuit
+        assert circuit.n_neurons > 5000
+        assert circuit.n_synapses > 0
+
+    def test_kc_model_assigned(self, mb_circuit):
+        _, mb_neurons, _ = mb_circuit
+        kc = mb_neurons[mb_neurons["cell_class"] == "Kenyon_Cell"]
+        assert all(kc["tau_m"] == 5.0), "KCs should have tau_m=5ms"
+
+    def test_pn_model_assigned(self, mb_circuit):
+        _, mb_neurons, _ = mb_circuit
+        pn = mb_neurons[mb_neurons["cell_class"] == "ALPN"]
+        assert all(pn["tau_m"] == 10.0), "PNs should have tau_m=10ms"
+
+
+class TestNeuronGroups:
+    def test_groups_cover_all_roles(self, mb_circuit):
+        from bravli.explore.mushroom_body import neuron_groups
+        circuit, mb_neurons, _ = mb_circuit
+        groups = neuron_groups(circuit, mb_neurons)
+        assert "KC" in groups
+        assert "PN" in groups
+        assert "MBON" in groups
+
+    def test_groups_indices_valid(self, mb_circuit):
+        from bravli.explore.mushroom_body import neuron_groups
+        circuit, mb_neurons, _ = mb_circuit
+        groups = neuron_groups(circuit, mb_neurons)
+        for role, indices in groups.items():
+            assert all(0 <= i < circuit.n_neurons for i in indices)
+
+
+class TestSimulateOdor:
+    def test_simulation_runs(self, mb_circuit):
+        from bravli.explore.mushroom_body import simulate_odor_presentation
+        circuit, mb_neurons, _ = mb_circuit
+        trials = simulate_odor_presentation(
+            circuit, mb_neurons, duration_ms=50.0,
+            odor_fraction=0.1, n_trials=1,
+        )
+        assert len(trials) == 1
+        assert trials[0]["result"].n_neurons == circuit.n_neurons
+
+    def test_sparseness_is_computed(self, mb_circuit):
+        from bravli.explore.mushroom_body import simulate_odor_presentation
+        circuit, mb_neurons, _ = mb_circuit
+        trials = simulate_odor_presentation(
+            circuit, mb_neurons, duration_ms=50.0,
+            odor_fraction=0.1, n_trials=1,
+        )
+        assert "sparseness" in trials[0]
+        assert 0.0 <= trials[0]["sparseness"] <= 1.0
+
+    def test_multiple_trials(self, mb_circuit):
+        from bravli.explore.mushroom_body import simulate_odor_presentation
+        circuit, mb_neurons, _ = mb_circuit
+        trials = simulate_odor_presentation(
+            circuit, mb_neurons, duration_ms=50.0,
+            odor_fraction=0.1, n_trials=3,
+        )
+        assert len(trials) == 3
+        # Different trials should have different active PN sets
+        pn_sets = [set(t["active_pns"]) for t in trials]
+        assert pn_sets[0] != pn_sets[1] or pn_sets[0] != pn_sets[2]
+
+
+class TestMBReport:
+    def test_report_runs(self, mb_circuit):
+        from bravli.explore.mushroom_body import (
+            simulate_odor_presentation, mb_analysis_report,
+        )
+        circuit, mb_neurons, _ = mb_circuit
+        trials = simulate_odor_presentation(
+            circuit, mb_neurons, duration_ms=50.0, n_trials=1,
+        )
+        report = mb_analysis_report(trials, mb_neurons)
+        assert "KC sparseness" in report
+        assert "Interpretation" in report
+#+end_src
+
+* Discussion: What the Results Mean
+
+** If KC sparseness is in the 5-15% range
+
+The wiring is doing the heavy lifting.  The PN→KC convergence/divergence ratio,
+combined with KC coincidence detection ($\tau_m = 5$ ms), naturally produces sparse
+representations without requiring APL feedback inhibition.  APL may serve to
+/stabilize/ sparseness across varying odor intensities (divisive normalization) rather
+than /create/ it.
+
+This would support Dasgupta et al.'s (2017) theoretical analysis: the fly MB
+implements a biological locality-sensitive hash, and the hash quality depends on the
+expansion ratio and random wiring, not on the details of inhibition.
+
+** If KC sparseness is too high (>30%)
+
+The model is missing something.  Likely candidates:
+1. *Synaptic weights too strong:* The uniform $W_{syn} = 0.275$ mV may overweight
+   PN→KC synapses relative to real life.  In the biological circuit, many PN→KC
+   synapses are weak or silent.
+2. *Missing short-term depression:* PN→KC synapses show strong short-term depression
+   (Cassenaer & Laurent 2007).  This reduces effective drive during sustained odor
+   responses.
+3. *APL inhibition too weak:* Our APL model uses the same synaptic weights as all
+   other neurons.  In reality, APL provides massive GABAergic drive.
+
+** If KC sparseness is too low (<2%)
+
+The threshold is too high or the drive too weak:
+1. *KC threshold too high:* The $V_{thresh} - V_{rest} = 7$ mV gap may be too large
+   for the number of convergent PN inputs.
+2. *PN→KC connectivity too sparse:* Our edge thresholding (min 5 synapses) may be
+   removing weak but functionally relevant PN→KC connections.
+3. *Integration window mismatch:* If the Poisson PN input is too asynchronous,
+   coincidence-detecting KCs never see enough simultaneous input.
+
+** The class-aware vs. uniform comparison
+
+Run the simulation twice: once with =mode="class_aware"= (KC tau_m=5ms) and once
+with =mode="uniform"= (all tau_m=20ms).  The difference quantifies how much KC
+biophysics contributes to sparseness.  If the class-aware model is substantially
+sparser, the Shiu uniform model is /missing something important/ about the MB.
+
+* Next Steps
+
+1. *Run the experiment.*  Use the portal's MB tab or the command-line functions
+   to simulate odor presentations and measure KC sparseness.
+
+2. *Parameter sweeps.*  Vary odor_fraction (0.05 → 0.50) and PN rate (10 → 100 Hz).
+   Plot sparseness vs. each parameter.  Where does the system transition from sparse
+   to dense?  Is the transition sharp (phase transition) or gradual?
+
+3. *APL ablation.*  Remove APL→KC edges and re-simulate.  If sparseness barely
+   changes, APL is redundant for the static sparse code.  If it collapses, APL
+   is essential.
+
+4. *Class-aware vs. uniform.*  Compare KC sparseness with tau_m=5ms (real) vs.
+   tau_m=20ms (Shiu uniform).  This isolates the contribution of KC intrinsic
+   properties to sparse coding.
+
+5. *MBON readout.*  Are MBON firing rates consistent with sparse KC input?  Do
+   MBONs respond differentially to different odors?  This is the behavioral
+   readout of the sparse code.
+
+6. *Write it up.*  The sparseness result, positive or negative, is a publishable
+   observation.  The comparison between class-aware and uniform models is novel.
+
+* Bibliography
+
+- Aso Y et al. (2014).  The neuronal architecture of the mushroom body
+  provides a logic for associative learning.  /eLife/ 3:e04577.
+- Caron SJC et al. (2013).  Random convergence of olfactory inputs in the
+  Drosophila mushroom body.  /Nature/ 497:113-117.
+- Cassenaer S, Laurent G (2007).  Hebbian STDP in mushroom bodies facilitates
+  the synchronous flow of olfactory information in locusts.  /Nature/
+  448:709-713.
+- Dasgupta S, Stevens CF, Bhatt D (2017).  A neural algorithm for a fundamental
+  computing problem.  /Science/ 358:793-796.
+- Demmer H, Bhatt D (2004).  Intrinsic membrane properties of Kenyon cells in
+  the mushroom body of the cockroach.  /J Neurophysiology/ 93:2959.
+- Hige T et al. (2015).  Heterosynaptic plasticity underlies aversive olfactory
+  learning in Drosophila.  /Neuron/ 88:985-998.
+- Honegger KS et al. (2011).  Cellular-resolution population imaging reveals
+  robust sparse coding in the Drosophila mushroom body.  /J Neuroscience/
+  31:11772-11785.
+- Li F et al. (2020).  The connectome of the adult Drosophila mushroom body
+  provides insights into function.  /eLife/ 9:e62576.
+- Lin AC et al. (2014).  Sparse, decorrelated odor coding in the mushroom body
+  enhances learned odor discrimination.  /Nature Neuroscience/ 17:559-568.
+- Schlegel P et al. (2021).  Information flow, cell types and stereotypy in a
+  full olfactory connectome.  /eLife/ 10:e66018.
+- Shiu PK et al. (2024).  A computational brain model reveals sensorimotor
+  processing.  /Nature/ 634:210-219.
+- Treves A, Rolls ET (1991).  What determines the capacity of autoassociative
+  memories in the brain?  /Network/ 2:371-397.
+- Turner GC et al. (2008).  Olfactory representations by Drosophila mushroom
+  body neurons.  /J Neurophysiology/ 99:734-746.
+- Willmore B, Tolhurst DJ (2001).  Characterizing the sparseness of neural
+  codes.  /Network/ 12:255-270.
+- Wilson RI et al. (2004).  Transformation of olfactory representations in the
+  Drosophila antennal lobe.  /Science/ 303:366-370.
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 13-mushroom-body-circuit
+tag: lesson/13-mushroom-body-circuit
+depends_on:
+  - 05-explore-mushroom-body
+  - 08-connectivity
+  - 09-synaptic-physiology
+  - 10-cell-models
+  - 11-simulation
+  - 12-portal
+files_modified:
+  - bravli/simulation/analysis.py    # sparseness metrics
+  - bravli/explore/mushroom_body.py  # circuit extraction + simulation
+  - bravli/portal/views.py           # mb_view
+  - bravli/portal/app.py             # wire MB tab
+files_created:
+  - tests/test_mb_circuit.py
+verification:
+  - "pytest tests/test_mb_circuit.py -v — all 23 tests pass"
+  - "pytest tests/ -v — all 185 tests pass, 2 skipped"
+  - "portal MB tab builds and displays with real data"
+next_lesson: 14-tbd
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

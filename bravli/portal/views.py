@@ -421,6 +421,255 @@ def physiology_view(edges=None):
 # Tab 5: Simulate
 # ---------------------------------------------------------------------------
 
+def mb_view(annotations=None, edges=None):
+    """Build the mushroom body microcircuit tab.
+
+    Allows interactive exploration of the MB sparse coding question:
+    does ~5-10% KC sparseness emerge from wiring alone?
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame, optional
+        FlyWire neuron annotations.
+    edges : pd.DataFrame, optional
+        Processed edge table (with weights).
+    """
+    _require_panel()
+
+    if annotations is None or edges is None:
+        return pn.Column(
+            pn.pane.Markdown("# Mushroom Body", styles={"color": "#c9d1d9"}),
+            pn.pane.Markdown(
+                "**No data loaded.** This tab requires both annotations and "
+                "the edge table (with weights) to build the MB microcircuit.\n\n"
+                "Run `build_portal(auto_pipeline=True)` with data files present.",
+                styles={"color": "#c9d1d9"},
+            ),
+        )
+
+    from bravli.explore.mushroom_body import (
+        build_mb_circuit, neuron_groups, simulate_odor_presentation,
+        mb_circuit_stats,
+    )
+    from bravli.simulation.analysis import (
+        firing_rates, spike_raster, population_sparseness,
+        active_fraction_by_group, population_rate,
+    )
+
+    # --- Build MB circuit once ---
+    status_md = pn.pane.Markdown(
+        "*Building MB circuit...*", styles={"color": "#c9d1d9"},
+    )
+
+    try:
+        circuit, mb_neurons, mb_edges = build_mb_circuit(
+            annotations, edges, mode="class_aware",
+        )
+        groups = neuron_groups(circuit, mb_neurons)
+        stats = mb_circuit_stats(mb_neurons, mb_edges)
+
+        role_counts = stats["neuron_counts"]
+        role_str = ", ".join(f"{r}: {n:,}" for r, n in
+                            sorted(role_counts.items(), key=lambda x: -x[1]))
+
+        status_md.object = (
+            f"**MB circuit ready.** {circuit.n_neurons:,} neurons, "
+            f"{circuit.n_synapses:,} synapses.\n\n"
+            f"{role_str}"
+        )
+    except Exception as e:
+        LOG.error("Failed to build MB circuit: %s", e)
+        return pn.Column(
+            pn.pane.Markdown("# Mushroom Body", styles={"color": "#c9d1d9"}),
+            pn.pane.Markdown(
+                f"**Error building MB circuit:** {e}\n\n"
+                "Check that the edge table has 'weight' and 'dominant_nt' columns.",
+                styles={"color": "#c9d1d9"},
+            ),
+        )
+
+    # --- Widgets ---
+    odor_fraction = pn.widgets.FloatSlider(
+        name="Odor fraction (PNs activated)",
+        start=0.05, end=0.50, step=0.05, value=0.10,
+    )
+    pn_rate = pn.widgets.FloatSlider(
+        name="PN firing rate (Hz)",
+        start=10.0, end=100.0, step=10.0, value=50.0,
+    )
+    duration = pn.widgets.IntSlider(
+        name="Duration (ms)",
+        start=100, end=1000, step=100, value=500,
+    )
+    n_trials = pn.widgets.IntSlider(
+        name="Trials", start=1, end=5, step=1, value=1,
+    )
+    run_button = pn.widgets.Button(
+        name="Simulate odor", button_type="primary",
+    )
+
+    # --- Result panes ---
+    sparseness_md = pn.pane.Markdown(
+        "*Configure and press 'Simulate odor'.*",
+        styles={"color": "#c9d1d9"},
+    )
+    raster_pane = pn.pane.Plotly(
+        _empty_figure("Spike raster (run simulation first)"),
+    )
+    rate_pane = pn.pane.Plotly(
+        _empty_figure("Population rate by group"),
+    )
+    bar_pane = pn.pane.Plotly(
+        _empty_figure("Active fraction by group"),
+    )
+
+    # Role colors for raster
+    role_colors = {
+        "KC": "#58a6ff",     # blue
+        "PN": "#8b949e",     # gray
+        "MBON": "#f0883e",   # orange
+        "DAN": "#3fb950",    # green
+        "MBIN": "#d2a8ff",   # purple
+        "APL": "#f85149",    # red
+    }
+
+    def _run(event):
+        sparseness_md.object = "*Running simulation...*"
+
+        trials = simulate_odor_presentation(
+            circuit, mb_neurons,
+            duration_ms=float(duration.value),
+            odor_fraction=odor_fraction.value,
+            pn_rate_hz=pn_rate.value,
+            n_trials=n_trials.value,
+        )
+
+        if not trials:
+            sparseness_md.object = "**No results.** Check that PNs are in the circuit."
+            return
+
+        trial = trials[0]  # show first trial in plots
+        result = trial["result"]
+
+        # --- Sparseness readout ---
+        sparsenesses = [t["sparseness"] for t in trials]
+        fractions = [t["kc_active_fraction"] for t in trials]
+        mean_s = np.mean(sparsenesses)
+        mean_f = np.mean(fractions)
+
+        interp = ""
+        if mean_f < 0.05:
+            interp = "Very sparse (<5%) — may be too sparse, check PN weights."
+        elif mean_f < 0.15:
+            interp = "In the experimental range (5-15%). Sparseness emerges from wiring."
+        elif mean_f < 0.30:
+            interp = "Moderate (15-30%). Higher than expected — APL inhibition may need tuning."
+        else:
+            interp = "Dense (>30%). Check E/I balance and thresholds."
+
+        sparseness_md.object = (
+            f"### Results\n"
+            f"- **KC sparseness (Treves-Rolls):** {mean_s:.4f}\n"
+            f"- **KC active fraction:** {mean_f*100:.1f}%\n"
+            f"- **Total spikes:** {result.n_spikes:,}\n"
+            f"- **Interpretation:** {interp}"
+        )
+
+        # --- Raster plot, color-coded by role ---
+        fig_raster = go.Figure()
+        for role, indices in groups.items():
+            if len(indices) == 0:
+                continue
+            times_arr, neurons_arr = spike_raster(result, neuron_indices=indices)
+            if len(times_arr) > 0:
+                fig_raster.add_trace(go.Scattergl(
+                    x=times_arr, y=neurons_arr,
+                    mode="markers",
+                    marker=dict(size=2, color=role_colors.get(role, "#888")),
+                    name=role,
+                ))
+        fig_raster.update_layout(
+            title=f"Spike raster — {result.n_spikes:,} spikes",
+            xaxis_title="Time (ms)", yaxis_title="Neuron index",
+            template="plotly_dark",
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            height=400, legend=dict(orientation="h", y=-0.15),
+        )
+        raster_pane.object = fig_raster
+
+        # --- Population rate per group ---
+        fig_rate = go.Figure()
+        for role, indices in groups.items():
+            if len(indices) == 0 or role == "APL":
+                continue
+            # Compute per-group population rate
+            n_bins = max(1, int(result.duration / 10.0))
+            counts = np.zeros(n_bins)
+            for i in indices:
+                st = result.spike_times[i]
+                if len(st) > 0:
+                    bins = np.clip((st / 10.0).astype(int), 0, n_bins - 1)
+                    np.add.at(counts, bins, 1)
+            rate = counts / (len(indices) * 0.01)  # 10ms bin -> 0.01 s
+            t = np.arange(n_bins) * 10.0 + 5.0
+            fig_rate.add_trace(go.Scatter(
+                x=t, y=rate, mode="lines", name=role,
+                line=dict(color=role_colors.get(role, "#888"), width=2),
+            ))
+        fig_rate.update_layout(
+            title="Population rate by group",
+            xaxis_title="Time (ms)", yaxis_title="Rate (Hz)",
+            template="plotly_dark",
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            height=300,
+        )
+        rate_pane.object = fig_rate
+
+        # --- Active fraction bar chart ---
+        ga = trial["group_activity"]
+        roles = sorted(ga.keys())
+        fracs = [ga[r][2] * 100 for r in roles]
+        colors = [role_colors.get(r, "#888") for r in roles]
+        fig_bar = go.Figure(go.Bar(
+            x=roles, y=fracs, marker_color=colors,
+        ))
+        fig_bar.add_hline(y=10, line_dash="dot", line_color="#f0883e",
+                          annotation_text="10% target")
+        fig_bar.update_layout(
+            title="Active fraction by group (>1 Hz)",
+            yaxis_title="% active", yaxis_range=[0, 100],
+            template="plotly_dark",
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            height=300,
+        )
+        bar_pane.object = fig_bar
+
+    run_button.on_click(_run)
+
+    provocation = pn.pane.Markdown(
+        "> *The mushroom body is the fly's associative memory — ~5,200 "
+        "Kenyon cells receive convergent input from ~685 projection neurons "
+        "and encode odors as sparse activity patterns. Only 5-10% of KCs "
+        "fire for any given odor. Does this sparseness emerge from the "
+        "connectome wiring alone, or does it require APL feedback inhibition? "
+        "The answer matters: if wiring suffices, then the structure is the "
+        "computation. If not, dynamics are doing something the anatomy cannot.*",
+        styles={"color": "#8b949e", "font-style": "italic"},
+    )
+
+    return pn.Column(
+        pn.pane.Markdown("# Mushroom Body", styles={"color": "#c9d1d9"}),
+        provocation,
+        status_md,
+        pn.Row(odor_fraction, pn_rate, duration, n_trials),
+        run_button,
+        sparseness_md,
+        raster_pane,
+        pn.Row(rate_pane, bar_pane, sizing_mode="stretch_both"),
+        sizing_mode="stretch_both",
+    )
+
+
 def simulate_view(circuit=None):
     """Build the simulation tab.
 

@@ -119,6 +119,18 @@ class TestViews:
         view = simulate_view(circuit=None)
         assert view is not None
 
+    def test_mb_view_no_data(self):
+        from bravli.portal.views import mb_view
+        view = mb_view(annotations=None, edges=None)
+        assert view is not None
+
+    def test_mb_view_with_data(self, sample_annotations, sample_edges):
+        """MB view with sample data — circuit build may fail but view still returns."""
+        from bravli.portal.views import mb_view
+        view = mb_view(annotations=sample_annotations, edges=sample_edges)
+        # Returns either the full view or an error view — both are valid
+        assert view is not None
+
 
 class TestApp:
     def test_build_portal_minimal(self, sample_annotations):
