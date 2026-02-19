@@ -270,3 +270,96 @@ def population_rate(result, bin_ms=10.0):
     times = np.arange(n_bins) * bin_ms + bin_ms / 2
 
     return times, rates
+
+
+def weight_evolution(snapshots, times):
+    """Summarize weight trajectory across plasticity snapshots.
+
+    Parameters
+    ----------
+    snapshots : list of np.ndarray
+        Weight vectors at each snapshot (from ThreeFactorSTDP).
+    times : list of float
+        Snapshot times (ms).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: time_ms, mean_weight, std_weight, min_weight, max_weight,
+        frac_depressed (fraction of synapses below initial value).
+    """
+    if not snapshots:
+        return pd.DataFrame(columns=[
+            "time_ms", "mean_weight", "std_weight", "min_weight",
+            "max_weight", "frac_depressed",
+        ])
+
+    initial = snapshots[0]
+    rows = []
+    for t, w in zip(times, snapshots):
+        rows.append({
+            "time_ms": t,
+            "mean_weight": float(np.mean(w)),
+            "std_weight": float(np.std(w)),
+            "min_weight": float(np.min(w)),
+            "max_weight": float(np.max(w)),
+            "frac_depressed": float(np.mean(w < initial - 1e-10)),
+        })
+    return pd.DataFrame(rows)
+
+
+def mbon_response_change(pre_rates, post_rates, mbon_indices):
+    """Learning index per MBON: (pre - post) / (pre + post).
+
+    Positive values indicate depression (post < pre = learned avoidance).
+
+    Parameters
+    ----------
+    pre_rates : np.ndarray
+        Per-neuron firing rates before training.
+    post_rates : np.ndarray
+        Per-neuron firing rates after training.
+    mbon_indices : array-like
+        Indices of MBON neurons.
+
+    Returns
+    -------
+    np.ndarray
+        Learning index per MBON. Range [-1, 1].
+    """
+    mbon_indices = np.asarray(mbon_indices)
+    pre = pre_rates[mbon_indices]
+    post = post_rates[mbon_indices]
+    denom = pre + post
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(denom > 0, (pre - post) / denom, 0.0)
+
+
+def performance_index(cs_plus_rates, cs_minus_rates, mbon_indices):
+    """Differential MBON response: CS+ vs CS-.
+
+    PI = (response_CS- - response_CS+) / (response_CS- + response_CS+)
+
+    Positive PI means CS+ drives less MBON activity than CS-,
+    indicating learned aversion to CS+.
+
+    Parameters
+    ----------
+    cs_plus_rates : np.ndarray
+        Per-neuron rates during CS+ presentation (post-training).
+    cs_minus_rates : np.ndarray
+        Per-neuron rates during CS- presentation.
+    mbon_indices : array-like
+        MBON neuron indices.
+
+    Returns
+    -------
+    np.ndarray
+        Performance index per MBON.
+    """
+    mbon_indices = np.asarray(mbon_indices)
+    plus = cs_plus_rates[mbon_indices]
+    minus = cs_minus_rates[mbon_indices]
+    denom = minus + plus
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(denom > 0, (minus - plus) / denom, 0.0)

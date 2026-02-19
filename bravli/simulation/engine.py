@@ -61,7 +61,8 @@ class SimulationResult:
 
 
 def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
-             record_v=False, record_idx=None, seed=None):
+             record_v=False, record_idx=None, seed=None,
+             plasticity_fn=None):
     """Run a LIF simulation.
 
     Parameters
@@ -82,6 +83,11 @@ def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
         records the first 100 neurons.
     seed : int, optional
         Random seed (for reproducibility of Poisson stimuli).
+    plasticity_fn : callable, optional
+        Called after spike detection each timestep:
+        plasticity_fn(step, t, dt, spiked, v, g, circuit)
+        May mutate circuit.weights in-place for online learning.
+        If None, no plasticity (default — all existing behavior unchanged).
 
     Returns
     -------
@@ -180,7 +186,11 @@ def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
             future_step = (step + delay) % (delay + 1)
             spike_buffer[future_step, spike_indices] = True
 
-        # 6. Record traces
+        # 6. Plasticity update (optional)
+        if plasticity_fn is not None:
+            plasticity_fn(step, t, dt, spiked, v, g, circuit)
+
+        # 7. Record traces
         if record_v and len(record_idx) > 0:
             v_trace[:, step] = v[record_idx]
             g_trace[:, step] = g[record_idx]

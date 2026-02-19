@@ -1,0 +1,500 @@
+#+title: Lesson 14 — ISN Regime and Olfactory Learning
+#+subtitle: Can the fly's mushroom body learn to avoid an odor?
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+In Lesson 13 we showed that sparse KC activation (~5-10%) emerges from the MB
+wiring alone.  Sparseness gives the fly a pattern-separated odor code.  But
+sparseness is not learning.  This lesson asks two deeper questions:
+
+#+begin_quote
+1. Is the mushroom body circuit in the inhibition-stabilized regime?
+2. Can three-factor synaptic plasticity produce single-trial olfactory
+   conditioning in our simulation?
+#+end_quote
+
+These are not toy questions either.  The ISN property determines whether the
+circuit can self-regulate through balanced E/I dynamics — a prerequisite for
+stable learning in recurrent networks.  And olfactory conditioning is the
+behavioral readout that connects circuit structure to organismal function:
+the fly that learns to avoid a shock-paired odor survives; the one that
+doesn't, doesn't.
+
+** Two investigations, one circuit
+
+This lesson implements two investigations from the bravli landscape:
+
+- *Investigation 6: ISN paradoxical response.*  We stimulate inhibitory neurons in
+  the MB and test whether network-level inhibition paradoxically /decreases/.  This
+  probes the dynamical regime of the circuit.
+
+- *Investigation 7: Three-factor STDP.*  We implement dopamine-gated KC→MBON
+  synaptic depression and simulate aversive conditioning.  We ask: does the MBON
+  response to the conditioned odor decrease after training?
+
+Both investigations build on the MB circuit from Lesson 13.  No new data is
+needed — only new experiments on the same substrate.
+
+* Part I: The Inhibition-Stabilized Network
+
+** The ISN theory
+
+Most neural circuits operate in one of two regimes (Tsodyks et al. 1997):
+
+#+begin_example
+  Non-ISN regime:                    ISN regime:
+  ┌──────────────┐                   ┌──────────────┐
+  │  E ←→ I      │                   │  E ←──→ I    │
+  │  weak E-E    │                   │  strong E-E  │
+  │              │                   │  (recurrent) │
+  │  Drive I ↑   │                   │  Drive I ↑   │
+  │  → E rate ↓  │                   │  → E rate ↑  │
+  │  (intuitive) │                   │  (paradoxical)│
+  └──────────────┘                   └──────────────┘
+#+end_example
+
+In the non-ISN regime, adding excitation to I-cells does what you'd expect:
+I-cells fire more, E-cells fire less.  Simple.
+
+In the ISN regime, recurrent excitation is strong enough that the circuit's
+stability /depends/ on inhibition.  When you drive I-cells harder:
+
+1. I-cells fire more → E-cells fire less (so far, intuitive)
+2. E-cells fire less → I-cells lose their recurrent excitatory drive
+3. I-cells fire /less/ overall, despite the extra external drive
+4. E-cells partially recover → paradoxical increase in E-cell rate
+
+This "paradoxical response" is the diagnostic signature of the ISN regime.
+Ozeki et al. (2009) demonstrated it in visual cortex; Tsodyks (1997) provided
+the theoretical framework.
+
+The fly MB may or may not be ISN — it depends on the strength of recurrent
+excitation (KC→APL→KC feedback is mainly inhibitory, but KC→MBON→... and
+lateral connections could create effective recurrence).  Testing this tells
+us about the circuit's dynamical character.
+
+** E/I classification
+
+Before testing the ISN property, we must classify neurons as excitatory,
+inhibitory, or modulatory.  In /Drosophila/, the mapping is:
+
+| Neurotransmitter | Role        | Cell types          |
+|------------------+-------------+---------------------|
+| Acetylcholine    | Excitatory  | KCs, PNs, most MBONs |
+| GABA             | Inhibitory  | APL, some MBONs     |
+| Glutamate        | Inhibitory  | Some MBONs          |
+| Dopamine         | Modulatory  | DANs (PAM, PPL1)    |
+| Serotonin        | Modulatory  | DPM                 |
+
+Note: glutamate is /inhibitory/ in the fly CNS — the opposite of vertebrates.
+This is because the fly's glutamate receptors (GluCl) are chloride channels,
+not cation channels.
+
+#+begin_src python :tangle ../bravli/explore/isn_experiment.py :eval no
+def identify_ei_groups(circuit, mb_neurons):
+    """Classify MB neurons as E, I, or modulatory by neurotransmitter."""
+    # ... (see isn_experiment.py for full implementation)
+#+end_src
+
+** The ISN experiment protocol
+
+Our protocol has three phases:
+
+#+begin_example
+  Time (ms):  0────100────────400────────700────800
+              │     │  Baseline  │ Perturbation │
+              │     │  E drive   │ E + I drive  │
+              settle│            │              │
+#+end_example
+
+1. *Settle* (0–100 ms): no input, let transients die
+2. *Baseline* (100–400 ms): drive E neurons with step current
+3. *Perturbation* (400–700 ms): additionally drive I neurons
+
+We measure firing rates in each epoch and compare.  If the E-cell rate
+/increases/ during the perturbation (or the I-cell rate paradoxically
+/decreases/), the circuit is ISN.
+
+#+begin_src python :tangle ../bravli/explore/isn_experiment.py :eval no
+def isn_experiment(circuit, mb_neurons, e_drive=10.0, i_perturbation=5.0,
+                   duration_ms=800.0, ...):
+    """Run the ISN paradoxical response test.
+
+    Returns dict with baseline/perturbation rates, rate changes,
+    and paradoxical_response (bool).
+    """
+    # ... (see isn_experiment.py for full implementation)
+#+end_src
+
+** Interpreting the results
+
+For a small synthetic MB circuit (~100 KCs, 5 MBONs, 1 APL), we typically
+see one of three outcomes:
+
+| Outcome | E rate change | I rate change | Interpretation |
+|---------+---------------+---------------+----------------|
+| Non-ISN | Decreases     | Increases     | Weak recurrence |
+| ISN     | Increases     | Decreases     | Strong recurrence |
+| Mixed   | Near zero     | Increases     | Near ISN boundary |
+
+The MB is expected to be near the ISN boundary.  The KC→APL→KC feedback loop
+creates effective recurrent inhibition that stabilizes the network, but whether
+the net recurrent /excitation/ is strong enough for ISN depends on KC→MBON→...
+pathways and synaptic strengths.
+
+A dose-response curve (varying I-cell perturbation amplitude) maps the
+transition:
+
+#+begin_src python :eval no
+from bravli.explore import isn_dose_response, isn_report
+
+results = isn_dose_response(circuit, mb_neurons,
+                            i_amplitudes=[1.0, 2.0, 5.0, 10.0, 20.0],
+                            e_drive=15.0)
+isn_report(results)
+#+end_src
+
+
+* Part II: The Compartment Architecture
+
+** Aso's 15 compartments
+
+The mushroom body is not a uniform structure.  Aso et al. (2014) showed that
+KC axons, MBON dendrites, and DAN arbors tile the MB into ~15 non-overlapping
+compartments.  Each compartment is an independent learning channel:
+
+#+begin_example
+  KC axon lobes:
+
+  gamma lobe              alpha'/beta' lobes        alpha/beta lobes
+  ┌────┬────┬────┬────┐  ┌────┬────┬────┐          ┌────┬────┬────┐
+  │ γ1 │ γ2 │ γ3 │ γ4 │  │α'1│α'2│α'3│          │ α1 │ α2 │ α3 │
+  │    │    │    │    │  └────┴────┴────┘          └────┴────┴────┘
+  │    │    │    │    │  ┌────┬────┐                ┌────┬────┐
+  │    │    │    │γ5  │  │β'1│β'2│                │ β1 │ β2 │
+  └────┴────┴────┴────┘  └────┴────┘                └────┴────┘
+
+  Each box = one compartment
+  Each has: specific MBON(s), specific DAN(s), and KCs from that lobe
+#+end_example
+
+The key insight is that dopaminergic neurons (DANs) innervate /specific/
+compartments.  PPL1 neurons carry aversive signals (electric shock) to
+gamma1, alpha1, alpha2, alpha3, beta1.  PAM neurons carry appetitive
+signals (sugar reward) to gamma2-5, alpha'/beta' compartments.
+
+This means the fly can learn different associations in different
+compartments simultaneously — approach a rewarding odor via PAM-gated
+learning while avoiding an aversive odor via PPL1-gated learning.
+
+#+begin_src python :eval no
+from bravli.explore import MB_COMPARTMENTS, compartment_summary
+
+# The compartment table is pure data — 15 entries from Aso 2014
+MB_COMPARTMENTS["gamma1"]
+# {'mbon': ['MBON01'], 'dan': ['PPL101'],
+#  'lobe': 'gamma', 'valence': 'aversive'}
+#+end_src
+
+** Building the compartment index
+
+The ~build_compartment_index~ function maps each compartment to concrete
+neuron indices and synapse masks in the circuit:
+
+#+begin_src python :eval no
+from bravli.explore import build_compartment_index
+
+index = build_compartment_index(circuit, mb_neurons)
+# index["gamma1"]["kc_indices"]       → array of KC indices in gamma lobe
+# index["gamma1"]["mbon_indices"]     → array of MBON01 indices
+# index["gamma1"]["dan_indices"]      → array of PPL101 indices
+# index["gamma1"]["kc_mbon_syn_mask"] → bool mask over circuit.weights
+#+end_src
+
+The synapse mask is the key to compartment-specific plasticity: it tells
+the learning rule /which/ synapses are eligible for modification in each
+compartment.
+
+
+* Part III: Three-Factor STDP
+
+** The learning rule
+
+Classical STDP (spike-timing-dependent plasticity) modifies synapses based
+on the relative timing of pre- and post-synaptic spikes.  But in the MB,
+KC→MBON synapses don't change on their own — they require a /third factor/:
+dopamine.
+
+The three-factor rule (Izhikevich 2007; Hige et al. 2015):
+
+#+begin_example
+  Factor 1: KC spike          → eligibility trace (local, at the synapse)
+  Factor 2: DAN spike         → dopamine signal (compartment-wide)
+  Factor 3: temporal overlap  → weight change
+
+  Δw = -lr × eligibility × dopamine × dt
+#+end_example
+
+The minus sign means /depression/ — when a KC that encodes an odor fires
+at the same time as a DAN carrying a punishment signal, the KC→MBON
+synapse weakens.  The MBON then responds less to that odor in the future.
+
+This is the molecular mechanism of aversive olfactory conditioning:
+the fly learns to avoid the odor because the approach-driving MBON
+no longer fires when the odor is presented.
+
+** Eligibility traces
+
+The eligibility trace is a biophysical concept: when a KC spikes, it
+leaves a molecular "tag" at its synapses that decays over ~1 second
+(tau_eligibility ≈ 1000 ms).  If a DAN spike arrives while the tag
+is still active, the synapse is modified.  If the tag has decayed,
+nothing happens.
+
+This time window (~1 s) corresponds to the behavioral observation
+that the shock must come within ~1 second of the odor for learning
+to occur.
+
+#+begin_src python :eval no
+from bravli.simulation import ThreeFactorSTDP
+
+rule = ThreeFactorSTDP(
+    compartment_index=index,
+    tau_eligibility=1000.0,  # ms — eligibility trace decay
+    tau_dopamine=500.0,      # ms — dopamine signal decay
+    lr=0.001,                # learning rate
+    w_min=0.0,               # weights can't go negative
+)
+#+end_src
+
+** The plasticity hook
+
+The LIF engine now accepts an optional ~plasticity_fn~ callback:
+
+#+begin_src python :tangle ../bravli/simulation/engine.py :eval no
+def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
+             record_v=False, record_idx=None, seed=None,
+             plasticity_fn=None):
+    """Run a LIF simulation.
+
+    plasticity_fn : callable, optional
+        Called after spike detection each timestep:
+        plasticity_fn(step, t, dt, spiked, v, g, circuit)
+        May mutate circuit.weights in-place.
+    """
+    # ... main loop ...
+    # After spike detection + reset:
+    if plasticity_fn is not None:
+        plasticity_fn(step, t, dt, spiked, v, g, circuit)
+#+end_src
+
+This is a minimal, zero-cost hook: when ~plasticity_fn~ is None (the
+default), the engine behaves identically to before.  All 185 existing
+tests pass unchanged.
+
+
+* Part IV: Olfactory Conditioning
+
+** The T-maze protocol
+
+The standard /Drosophila/ conditioning experiment (Tully & Quinn 1985):
+
+#+begin_example
+  Time →
+  ┌─────────┐ ┌─────────────────────────────┐ ┌─────────┐ ┌─────────┐
+  │Pre-test │ │      Training (6 trials)     │ │Post-test│ │ Control │
+  │ CS+ only│ │ CS+ odor + DAN shock (US)    │ │ CS+ only│ │ CS- only│
+  │         │ │ ┌──┐  ┌──┐  ┌──┐  ...       │ │         │ │         │
+  │ measure │ │ │  │  │  │  │  │            │ │ measure │ │ measure │
+  │ baseline│ │ │  │  │  │  │  │            │ │ learned │ │ control │
+  └─────────┘ └─────────────────────────────┘ └─────────┘ └─────────┘
+#+end_example
+
+1. *Pre-test*: present CS+ odor (Poisson drive to ~10% of PNs), measure
+   MBON firing rates.  This is the baseline.
+
+2. *Training*: N trials of CS+ paired with DAN activation (electric shock
+   proxy).  KCs encoding the odor fire → eligibility traces form.
+   DANs fire → dopamine signal in the target compartment.  Three-factor
+   rule depresses KC→MBON synapses in that compartment.
+
+3. *Post-test*: present CS+ odor alone.  MBONs in the trained compartment
+   should respond /less/ than baseline.
+
+4. *Control*: present CS- (different odor, never paired).  MBONs should
+   respond unchanged, showing that the learning is odor-specific.
+
+** The simulation
+
+Our conditioning simulation runs as a single continuous simulation —
+weights evolve continuously across trials, as in biology.  Trial
+boundaries are defined by time windows for analysis.
+
+#+begin_src python :eval no
+from bravli.explore import aversive_conditioning, conditioning_report
+
+results = aversive_conditioning(
+    circuit, mb_neurons, mb_edges,
+    cs_odor_fraction=0.1,        # 10% of PNs encode the odor
+    us_compartment="gamma1",      # PPL1-gamma1 carries the shock signal
+    n_training_trials=6,
+    trial_duration_ms=500.0,
+    lr=0.001,
+)
+
+conditioning_report(results)
+#+end_src
+
+** Learning metrics
+
+Three metrics quantify the learning outcome:
+
+*** Learning index
+
+LI = (pre_rate - post_rate) / (pre_rate + post_rate)
+
+Positive LI means MBON response decreased after training (learned
+avoidance).  Range [-1, 1].
+
+*** Performance index
+
+PI = (CS-_rate - CS+_rate) / (CS-_rate + CS+_rate)
+
+Positive PI means the fly discriminates: it responds less to the
+conditioned odor than to the control odor.
+
+*** Weight evolution
+
+The ~weight_evolution~ function tracks mean KC→MBON synaptic weights
+across training.  A monotonically decreasing curve confirms that
+three-factor STDP is driving depression specifically at synapses
+encoding the conditioned odor.
+
+#+begin_src python :eval no
+from bravli.simulation import weight_evolution, mbon_response_change
+
+w_evo = weight_evolution(
+    results["plasticity"].weight_snapshots,
+    results["plasticity"].snapshot_times,
+)
+# DataFrame with: time_ms, mean_weight, frac_depressed, ...
+
+li = mbon_response_change(
+    results["pre_test_rates"],
+    results["post_test_rates"],
+    results["mbon_indices"],
+)
+# Per-MBON learning index
+#+end_src
+
+
+* Part V: What We Learned
+
+** The ISN question
+
+The MB circuit's ISN status depends on recurrent excitation strength.
+In our synthetic circuit (100 KCs, small APL feedback), we typically see
+the non-ISN regime — adding I-cell drive reduces E-cell rates as expected.
+This is consistent with the MB's architecture: the dominant recurrent
+pathway (KC→APL→KC) is /inhibitory/, not excitatory.
+
+However, the ISN test is still informative:
+
+1. It confirms that the E/I balance in our model is physiological
+2. It provides a baseline for comparison with cortical circuits
+   (which are typically ISN)
+3. It identifies the parameter regime — useful when we later add
+   recurrent MBON→DAN→KC pathways
+
+** The learning question
+
+Three-factor STDP should produce detectable MBON depression in the
+trained compartment.  Whether the effect is large enough for behavioral
+significance depends on:
+
+- *Learning rate*: too low → no detectable change; too high → all
+  synapses bottom out at w_min
+- *Odor sparseness*: sparse KC activation means fewer synapses are
+  eligible → less total depression but more specific
+- *Number of trials*: more training → more depression, but diminishing
+  returns as eligible synapses approach w_min
+- *Compartment specificity*: depression should occur in the US
+  compartment (gamma1) but not others
+
+** Design decisions
+
+Several design choices are worth noting:
+
+1. *Plasticity hook is minimal.* One parameter, one ~if~ block. The
+   callback receives the full state and can mutate weights in-place.
+   No return value, no overhead when unused.
+
+2. *Compartment mapping is pure data.* The Aso 2014 table lives in
+   ~mb_compartments.py~ as a dict.  All downstream logic derives from
+   it deterministically.
+
+3. *Simplified three-factor rule.* We implement dopamine-gated depression
+   only.  The full Handler et al. (2019) model would require
+   receptor-specific timing windows per compartment — a natural extension
+   but not needed for the first demonstration.
+
+4. *Single continuous simulation.* Weights evolve across the entire
+   protocol.  Trial-by-trial analysis uses time-window slicing.  This
+   is biologically correct and avoids artificial weight resets between
+   trials.
+
+
+* Tests
+
+The test suite verifies both investigations:
+
+#+begin_src python :eval no
+# Run from bravli/code/bravli/
+# PYTHONPATH=. python3 -m pytest tests/test_isn.py tests/test_conditioning.py -v
+#+end_src
+
+** ISN tests (16 tests)
+
+- Compartment table: completeness, required keys, gamma1 aversive
+- Compartment assignment: PNs→calyx, APL→global, KCs→lobes
+- Compartment index: structure, synapse masks
+- E/I classification: coverage, valid indices
+- ISN experiment: produces activity, returns expected keys, paradoxical bool
+- Dose-response: multiple amplitudes
+- Report generation
+
+** Conditioning tests (18 tests)
+
+- Plasticity hook: None unchanged, callback called, weight modification
+- Three-factor STDP: initialization, eligibility decay, requires both
+  factors, weight clamping, snapshots
+- Analysis: weight_evolution, mbon_response_change, performance_index
+- Conditioning: protocol runs, weight change, timing, snapshots
+- Report generation
+
+
+* References
+
+- Aso Y et al. (2014). The neuronal architecture of the mushroom body provides
+  a logic for associative learning. /eLife/ 3:e04577.
+- Handler A et al. (2019). Distinct dopamine receptor pathways underlie the
+  temporal sensitivity of associative learning. /Cell/ 178(1):60-75.
+- Hige T et al. (2015). Heterosynaptic plasticity underlies aversive olfactory
+  learning in Drosophila. /Neuron/ 88(5):985-998.
+- Izhikevich EM (2007). Solving the distal reward problem through linkage of
+  STDP and dopamine signaling. /Cerebral Cortex/ 17(10):2443-2452.
+- Li F et al. (2020). The connectome of the adult Drosophila mushroom body
+  provides insights into function. /eLife/ 9:e62576.
+- Ozeki H et al. (2009). Inhibitory stabilization of the cortical network
+  underlies visual surround suppression. /Neuron/ 62(4):578-592.
+- Schlegel P et al. (2021). Information flow, cell types and stereotypy in a
+  full olfactory connectome. /eLife/ 10:e66018.
+- Tsodyks MV et al. (1997). Paradoxical effects of external modulation of
+  inhibitory interneurons. /J Neurosci/ 17(11):4382-4388.
+- Tully T & Quinn WG (1985). Classical conditioning and retention in normal
+  and mutant Drosophila melanogaster. /J Comp Physiol A/ 157:263-277.
+- Turner GC et al. (2008). Olfactory representations by Drosophila mushroom body
+  neurons. /J Neurophysiol/ 99:734-746.

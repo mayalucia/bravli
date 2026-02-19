@@ -34,4 +34,8 @@ from .analysis import (
     lifetime_sparseness,
     active_fraction_by_group,
     population_rate,
+    weight_evolution,
+    mbon_response_change,
+    performance_index,
 )
+from .plasticity import ThreeFactorSTDP
