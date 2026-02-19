@@ -9,6 +9,7 @@ Subpackages:
     composition   Cell type distributions and neurotransmitter profiles
     factology     Structured scientific measurements
     connectivity  Connectome edge list analysis and neuropil matrices
+    physiology    Synapse models: NT-to-biophysics parameter database
     viz           3D visualization via navis
 """
 

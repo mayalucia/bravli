@@ -1,0 +1,1029 @@
+#+title: Lesson 09 — Synaptic Physiology
+#+subtitle: From neurotransmitter predictions to biophysical synapse models
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+At the Blue Brain Project, synaptic physiology was stage 8 of the pipeline: after
+placing neurons and predicting connectivity, each synapse was assigned a physiology
+model — peak conductance, time constants, short-term plasticity parameters (use,
+depression, facilitation). This came from paired recordings that measured PSP
+amplitudes and dynamics for each m-type → m-type pathway. The resulting parameter
+space was rich: 6 synapse types (E1, E2, E3, I1, I2, I3), each with distinct kinetics
+and STP profiles.
+
+For the fly brain, we have something BBP never had: a /neurotransmitter prediction for
+every synapse/. The FlyWire ML pipeline (Eckstein et al. 2024, /Cell/) classifies each
+synapse into one of 6 NTs — acetylcholine, GABA, glutamate, dopamine, serotonin,
+octopamine — with 87% per-synapse and 94% per-neuron accuracy. This NT identity is
+the key to physiology: each NT type implies a receptor, a reversal potential, a time
+course, and a sign (excitatory, inhibitory, or modulatory).
+
+This lesson builds a =SynapseModel= parameter database that maps NT types to
+biophysical parameters. We provide two levels of detail:
+
+1. *Simple (Shiu-level)*: All synapses share one time constant; NT determines only
+   the sign (+1/-1). This suffices for steady-state connectivity analysis.
+2. *Biophysical (BBP-level)*: Each NT type gets distinct tau_rise, tau_decay, E_rev,
+   g_peak, and (optionally) Tsodyks-Markram STP parameters. This is needed for
+   temporal dynamics.
+
+The parameter values come from direct Drosophila electrophysiology where available
+(cholinergic and GABAergic Kenyon cell recordings: Su & O'Dowd 2003, Lee & O'Dowd
+2000, Lee et al. 2003). Where data is missing (GluCl kinetics, aminergic modulation),
+we use principled defaults with explicit confidence annotations.
+
+** The Parameter Gap
+
+A striking fact: /no published Drosophila synapse parameter database exists/. Unlike
+the mammalian brain, where the Allen Institute and Blue Brain have curated thousands of
+patch-clamp recordings into standardized databases, the fly community has:
+
+- Excellent *connectivity* (complete connectome)
+- Excellent *NT identity* (ML predictions)
+- Excellent *morphology* (EM skeletons)
+- Almost no *synaptic physiology* for central synapses
+
+The NMJ is well characterized (Hallermann et al. 2010), but NMJ parameters don't
+transfer to central synapses — different receptor complexes, different vesicle pools,
+different dynamics. For the central brain, we have recordings from Kenyon cells
+(mushroom body) and a handful of other identified neurons. Everything else is inferred.
+
+This lesson makes the parameter gap visible and fills it with the best available
+science. Every parameter carries a confidence tag: HIGH (direct Drosophila data),
+MEDIUM (insect literature or close analogy), LOW (theoretical default).
+
+** Learning Objectives
+
+- [ ] Understand the mapping from NT type to synaptic biophysics
+- [ ] Build a =SynapseModel= dataclass capturing kinetic and STP parameters
+- [ ] Construct a parameter database with confidence annotations
+- [ ] Implement both simple (sign-only) and biophysical synapse models
+- [ ] Assign synapse models to the FlyWire edge list from Lesson 08
+- [ ] Produce physiology factsheets per NT type
+
+** File Map
+
+| File                                 | Role                                      |
+|--------------------------------------+-------------------------------------------|
+| =bravli/physiology/__init__.py=     | Subpackage exports                        |
+| =bravli/physiology/synapse_models.py= | SynapseModel dataclass + parameter DB   |
+| =bravli/physiology/assign.py=       | Assign models to edge list                |
+| =tests/test_physiology.py=          | Tests with synthetic data                 |
+
+* The Science
+
+** Neurotransmitter-to-receptor mapping in Drosophila
+
+#+name: tbl:nt-receptor-map
+| NT            | Receptor(s)           | Ion(s)         | Sign         | Speed  | Confidence |
+|---------------+-----------------------+----------------+--------------+--------+------------|
+| Acetylcholine | nAChR (nicotinic)     | Na+, K+, Ca2+  | Excitatory   | Fast   | HIGH       |
+| GABA          | Rdl (GABA_A-like)     | Cl-            | Inhibitory   | Fast   | HIGH       |
+| GABA          | GABA_B (metabotropic) | K+ (via GIRK)  | Inhibitory   | Slow   | MEDIUM     |
+| Glutamate     | GluCl                 | Cl-            | Inhibitory   | Fast   | MEDIUM     |
+| Glutamate     | iGluR (DKaiR1D etc.)  | Na+, K+, Ca2+  | Excitatory   | Fast   | LOW        |
+| Dopamine      | Dop1R1/2 (D1-like)    | cAMP cascade   | Modulatory   | Slow   | MEDIUM     |
+| Dopamine      | Dop2R (D2-like)       | cAMP cascade   | Modulatory   | Slow   | MEDIUM     |
+| Serotonin     | 5-HT receptors        | cAMP/IP3       | Modulatory   | Slow   | MEDIUM     |
+| Octopamine    | Oct alpha/beta        | cAMP/Ca2+      | Modulatory   | Slow   | MEDIUM     |
+
+Key insight for the fly brain: *glutamate is predominantly inhibitory in the central
+nervous system*, mediated by GluCl chloride channels. This is the opposite of the
+mammalian brain. The Shiu et al. (2024) whole-brain LIF model treats glutamate as
+inhibitory by default, consistent with the predominant receptor type.
+
+** Quantitative parameter table
+
+These are the anchor measurements from Drosophila electrophysiology:
+
+#+name: tbl:synapse-params
+| NT type     | tau_rise (ms) | tau_decay (ms) | E_rev (mV) | g_peak (nS) | Source                  | Confidence |
+|-------------+---------------+----------------+------------+-------------+-------------------------+------------|
+| ACh (nAChR) |           0.5 |            1.8 |          0 |    0.3--0.5 | Su & O'Dowd 2003       | HIGH       |
+| GABA_A (Rdl) |          0.8 |            4.5 |        -45 |    0.2--0.4 | Lee et al. 2003        | HIGH       |
+| Glu (GluCl) |           0.8 |            5.0 |        -45 |         0.3 | GABA_A analogy         | LOW        |
+| Glu (iGluR) |           1.5 |            5.0 |          0 |    0.5--1.0 | Han et al. 2024 (NMJ)  | MEDIUM     |
+| Dopamine    |           --- |            --- |        --- |         --- | Modulatory, not fast   | ---        |
+| Serotonin   |           --- |            --- |        --- |         --- | Modulatory, not fast   | ---        |
+| Octopamine  |           --- |            --- |        --- |         --- | Modulatory, not fast   | ---        |
+
+The aminergic NTs (DA, 5-HT, OA) act through GPCRs on timescales of 100 ms to
+seconds. They modulate gain, threshold, and plasticity rather than producing fast
+PSPs. For simulation, they should be modeled as multiplicative gain factors on a
+slow timescale, not as conductance-based synapses.
+
+** The Shiu et al. (2024) simplification
+
+The Berkeley whole-brain LIF model used a dramatically simpler approach:
+
+- *One* time constant: =tau_syn= = 5 ms for all NT types
+- *One* weight unit: =W_syn= = 0.275 mV per synapse
+- NT determines only the *sign*: ACh, DA, 5-HT, OA → +1; GABA, Glu → -1
+- Connection weight: $w_{ij} = n_{synapses} \times sign \times W_{syn}$
+
+This works remarkably well for predicting steady-state activity patterns,
+demonstrating that the wiring diagram carries enormous information. But it ignores
+kinetic differences that matter for temporal coding: the 1.8 ms ACh decay vs the
+4.5 ms GABA decay produces a meaningful asymmetry in integration windows.
+
+** Short-term plasticity
+
+Short-term plasticity (STP) — facilitation and depression on the 10-1000 ms timescale
+— is well characterized at the Drosophila NMJ (Hallermann et al. 2010) but almost
+unmeasured at central synapses. The Tsodyks-Markram model parameterizes STP with three
+numbers: $U$ (initial release probability), $\tau_{rec}$ (depression recovery), and
+$\tau_{fac}$ (facilitation decay).
+
+Reasonable estimates for central synapses:
+
+| Parameter     | Excitatory (ACh) | Inhibitory (GABA, Glu) | Source                    |
+|---------------+------------------+------------------------+---------------------------|
+| U             |        0.3--0.5  |             0.3--0.5   | NMJ analogy               |
+| tau_rec (ms)  |       200--800   |            200--800    | Insect central lit.       |
+| tau_fac (ms)  |        50--100   |                    0   | Exc: facilitating; Inh: depressing |
+
+These are LOW confidence — flagged as defaults, not measurements.
+
+* Implementation
+
+** Physiology subpackage init
+
+#+begin_src python :tangle ../bravli/physiology/__init__.py
+"""physiology — Synaptic physiology models for Drosophila brain simulation.
+
+Maps neurotransmitter types to biophysical synapse parameters: kinetics,
+reversal potentials, peak conductances, and short-term plasticity. Provides
+both simple (sign-only) and biophysical (per-NT kinetics) model levels.
+
+Data sources: Su & O'Dowd 2003 (nAChR), Lee et al. 2003 (GABA_A),
+Han et al. 2024 (NMJ iGluR), Shiu et al. 2024 (whole-brain LIF).
+"""
+
+from .synapse_models import (
+    SynapseModel,
+    STPParams,
+    SYNAPSE_DB,
+    get_synapse_model,
+    list_models,
+    simple_sign,
+)
+from .assign import (
+    assign_synapse_models,
+    compute_synaptic_weights,
+    physiology_summary,
+)
+#+end_src
+
+** synapse_models.py — Parameter database
+
+The =SynapseModel= dataclass captures everything needed to instantiate a synapse in
+simulation: kinetic time constants, reversal potential, peak conductance, and
+(optionally) STP parameters. Each parameter has a confidence tag.
+
+The =SYNAPSE_DB= dictionary is the central parameter database — keyed by NT type,
+valued by =SynapseModel=. This is the Drosophila equivalent of BBP's synapse
+physiology parameter file.
+
+#+begin_src python :tangle ../bravli/physiology/synapse_models.py
+"""Synapse model parameter database for Drosophila neurotransmitter types.
+
+Each NT type maps to a SynapseModel with kinetic, conductance, and
+short-term plasticity parameters. Confidence levels (HIGH, MEDIUM, LOW)
+indicate the strength of the supporting evidence.
+
+References:
+    Su & O'Dowd 2003 — nAChR kinetics in Kenyon cells
+    Lee & O'Dowd 2000 — Fast cholinergic transmission
+    Lee et al. 2003 — Rdl GABA_A fast inhibition
+    Han et al. 2024 — NMJ GluR gating with Neto
+    Shiu et al. 2024 — Whole-brain LIF parameters
+    Hallermann et al. 2010 — NMJ short-term plasticity
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Confidence levels
+# ---------------------------------------------------------------------------
+
+HIGH = "HIGH"      # Direct Drosophila electrophysiology data
+MEDIUM = "MEDIUM"  # Insect literature or close analogy
+LOW = "LOW"        # Theoretical default, no direct measurement
+
+
+# ---------------------------------------------------------------------------
+# Short-term plasticity parameters (Tsodyks-Markram model)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class STPParams:
+    """Tsodyks-Markram short-term plasticity parameters.
+
+    U: initial release probability (utilization)
+    tau_rec: recovery from depression (ms)
+    tau_fac: facilitation decay (ms); 0 = no facilitation
+    confidence: evidence strength for these values
+    """
+    U: float = 0.4
+    tau_rec: float = 400.0
+    tau_fac: float = 0.0
+    confidence: str = LOW
+
+
+# ---------------------------------------------------------------------------
+# Synapse model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SynapseModel:
+    """Biophysical parameters for a synapse type.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable name (e.g., "cholinergic_excitatory").
+    nt_type : str
+        Neurotransmitter name matching FlyWire labels.
+    sign : int
+        +1 (excitatory), -1 (inhibitory), 0 (modulatory).
+    tau_rise : float
+        Conductance rise time constant (ms). None for modulatory.
+    tau_decay : float
+        Conductance decay time constant (ms). None for modulatory.
+    e_rev : float or None
+        Reversal potential (mV). None for modulatory (no fast PSP).
+    g_peak : float or None
+        Peak unitary conductance (nS). None for modulatory.
+    modulation_tau : float or None
+        Effective time constant for modulatory NTs (ms). None for fast.
+    modulation_gain : float
+        Multiplicative gain factor for modulatory NTs (1.0 = no effect).
+    stp : STPParams or None
+        Short-term plasticity parameters.
+    confidence : str
+        Overall confidence in this parameter set.
+    source : str
+        Key reference(s) for these parameters.
+    notes : str
+        Additional context or caveats.
+    """
+    name: str
+    nt_type: str
+    sign: int
+    tau_rise: Optional[float] = None
+    tau_decay: Optional[float] = None
+    e_rev: Optional[float] = None
+    g_peak: Optional[float] = None
+    modulation_tau: Optional[float] = None
+    modulation_gain: float = 1.0
+    stp: Optional[STPParams] = None
+    confidence: str = LOW
+    source: str = ""
+    notes: str = ""
+
+    @property
+    def is_fast(self):
+        """True if this is a fast ionotropic synapse (has tau_rise/decay)."""
+        return self.tau_rise is not None and self.tau_decay is not None
+
+    @property
+    def is_modulatory(self):
+        """True if this is a slow modulatory synapse."""
+        return self.sign == 0
+
+    @property
+    def sign_label(self):
+        """Human-readable sign label."""
+        return {1: "excitatory", -1: "inhibitory", 0: "modulatory"}[self.sign]
+
+    def to_dict(self):
+        """Serialize to dict for export."""
+        d = {
+            "name": self.name,
+            "nt_type": self.nt_type,
+            "sign": self.sign,
+            "sign_label": self.sign_label,
+            "tau_rise_ms": self.tau_rise,
+            "tau_decay_ms": self.tau_decay,
+            "e_rev_mV": self.e_rev,
+            "g_peak_nS": self.g_peak,
+            "modulation_tau_ms": self.modulation_tau,
+            "modulation_gain": self.modulation_gain,
+            "confidence": self.confidence,
+            "source": self.source,
+            "notes": self.notes,
+        }
+        if self.stp is not None:
+            d["stp_U"] = self.stp.U
+            d["stp_tau_rec_ms"] = self.stp.tau_rec
+            d["stp_tau_fac_ms"] = self.stp.tau_fac
+            d["stp_confidence"] = self.stp.confidence
+        return d
+
+
+# ---------------------------------------------------------------------------
+# The parameter database
+# ---------------------------------------------------------------------------
+
+SYNAPSE_DB = {
+
+    "acetylcholine": SynapseModel(
+        name="cholinergic_excitatory",
+        nt_type="acetylcholine",
+        sign=1,
+        tau_rise=0.5,
+        tau_decay=1.8,
+        e_rev=0.0,
+        g_peak=0.4,
+        stp=STPParams(U=0.4, tau_rec=400.0, tau_fac=75.0, confidence=LOW),
+        confidence=HIGH,
+        source="Su & O'Dowd 2003; Lee & O'Dowd 2000",
+        notes="nAChR-mediated. tau_rise 0.43-0.61 ms, tau_decay 1.4-2.1 ms "
+              "from Kenyon cell recordings. g_peak from mEPSC ~25 pA / 75 mV.",
+    ),
+
+    "GABA": SynapseModel(
+        name="gabaergic_inhibitory",
+        nt_type="GABA",
+        sign=-1,
+        tau_rise=0.8,
+        tau_decay=4.5,
+        e_rev=-45.0,
+        g_peak=0.3,
+        stp=STPParams(U=0.4, tau_rec=400.0, tau_fac=0.0, confidence=LOW),
+        confidence=HIGH,
+        source="Lee et al. 2003; Su & O'Dowd 2003",
+        notes="Rdl (GABA_A-like) Cl- channel. tau_rise 0.80-0.88 ms, "
+              "tau_decay 3.7-5.4 ms. E_rev -37 to -45 mV depending on [Cl-]_i. "
+              "Using -45 mV (physiological estimate for adult CNS).",
+    ),
+
+    "glutamate": SynapseModel(
+        name="glutamatergic_inhibitory",
+        nt_type="glutamate",
+        sign=-1,
+        tau_rise=0.8,
+        tau_decay=5.0,
+        e_rev=-45.0,
+        g_peak=0.3,
+        stp=STPParams(U=0.4, tau_rec=400.0, tau_fac=0.0, confidence=LOW),
+        confidence=LOW,
+        source="GABA_A analogy; Li et al. 2021 (GluCl); Shiu et al. 2024",
+        notes="GluCl-mediated inhibition predominates in central brain. "
+              "No direct kinetic recordings from Drosophila CNS GluCl. "
+              "Parameters modeled on GABA_A (same Cl- channel family). "
+              "A minority of central glutamatergic synapses may be excitatory "
+              "(via iGluR), but GluCl is the default for connectome-scale models.",
+    ),
+
+    "dopamine": SynapseModel(
+        name="dopaminergic_modulatory",
+        nt_type="dopamine",
+        sign=0,
+        modulation_tau=5000.0,
+        modulation_gain=1.5,
+        confidence=MEDIUM,
+        source="Yamamoto & Seto 2014; Shiu et al. 2024",
+        notes="GPCR-mediated (Dop1R1/2 D1-like, Dop2R D2-like). "
+              "No fast PSP; modulates excitability and synaptic gain. "
+              "In MB: gates Hebbian learning (reward/punishment). "
+              "modulation_tau ~seconds; modulation_gain is a placeholder. "
+              "Shiu et al. treated as excitatory (sign=+1) for simplicity.",
+    ),
+
+    "serotonin": SynapseModel(
+        name="serotonergic_modulatory",
+        nt_type="serotonin",
+        sign=0,
+        modulation_tau=5000.0,
+        modulation_gain=1.3,
+        confidence=MEDIUM,
+        source="insect 5-HT literature",
+        notes="GPCR-mediated (5-HT receptors coupled to cAMP/IP3). "
+              "Modulates sensory gain and feeding circuits. "
+              "No fast conductance; operates on second timescale.",
+    ),
+
+    "octopamine": SynapseModel(
+        name="octopaminergic_modulatory",
+        nt_type="octopamine",
+        sign=0,
+        modulation_tau=5000.0,
+        modulation_gain=1.3,
+        confidence=MEDIUM,
+        source="Roeder 2005",
+        notes="Functionally analogous to vertebrate norepinephrine. "
+              "Multiple receptor subtypes (alpha, beta). "
+              "Modulates arousal, sensory sensitivity, locomotor vigor.",
+    ),
+}
+
+# Alias: the Shiu model sign convention
+_SHIU_SIGNS = {
+    "acetylcholine": 1,
+    "GABA": -1,
+    "glutamate": -1,
+    "dopamine": 1,    # Shiu treats as excitatory
+    "serotonin": 1,   # Shiu treats as excitatory
+    "octopamine": 1,  # Shiu treats as excitatory
+}
+
+
+def get_synapse_model(nt_type):
+    """Look up a SynapseModel by neurotransmitter name.
+
+    Parameters
+    ----------
+    nt_type : str
+        Neurotransmitter name (e.g., "acetylcholine", "GABA").
+
+    Returns
+    -------
+    SynapseModel
+
+    Raises
+    ------
+    KeyError
+        If nt_type is not in the database.
+    """
+    if nt_type not in SYNAPSE_DB:
+        raise KeyError(
+            f"Unknown NT type '{nt_type}'. "
+            f"Available: {list(SYNAPSE_DB.keys())}"
+        )
+    return SYNAPSE_DB[nt_type]
+
+
+def list_models():
+    """List all synapse models in the database.
+
+    Returns
+    -------
+    list of dict
+        Summary of each model: name, nt_type, sign, confidence.
+    """
+    return [
+        {
+            "nt_type": m.nt_type,
+            "name": m.name,
+            "sign": m.sign,
+            "sign_label": m.sign_label,
+            "is_fast": m.is_fast,
+            "confidence": m.confidence,
+        }
+        for m in SYNAPSE_DB.values()
+    ]
+
+
+def simple_sign(nt_type, mode="biophysical"):
+    """Return the sign (+1/-1/0) for a neurotransmitter.
+
+    Parameters
+    ----------
+    nt_type : str
+        Neurotransmitter name.
+    mode : str
+        "biophysical" — modulatory NTs get 0.
+        "shiu" — modulatory NTs get +1 (following Shiu et al. 2024).
+
+    Returns
+    -------
+    int
+    """
+    if mode == "shiu":
+        return _SHIU_SIGNS.get(nt_type, 0)
+    return SYNAPSE_DB[nt_type].sign if nt_type in SYNAPSE_DB else 0
+#+end_src
+
+** assign.py — Assign models to edges
+
+This module bridges the physiology database (Lesson 09) with the connectivity
+edge list (Lesson 08). Given an edge DataFrame with =dominant_nt= annotations,
+it assigns synapse model parameters and computes effective synaptic weights.
+
+#+begin_src python :tangle ../bravli/physiology/assign.py
+"""Assign synapse physiology models to connectome edges.
+
+Bridges the parameter database (synapse_models.py) with the connectivity
+edge list (Lesson 08). Given edges with dominant_nt annotations, assigns
+biophysical parameters and computes effective synaptic weights.
+"""
+
+import pandas as pd
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.physiology.synapse_models import (
+    SYNAPSE_DB, get_synapse_model, simple_sign,
+)
+from bravli.utils import get_logger
+
+LOG = get_logger("physiology.assign")
+
+
+@evaluate_datasets
+def assign_synapse_models(edges, mode="biophysical"):
+    """Assign synapse model parameters to each edge.
+
+    Adds columns for sign, tau_rise, tau_decay, e_rev, g_peak,
+    and confidence based on the edge's dominant_nt.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with 'dominant_nt' column (from assign_dominant_nt).
+    mode : str
+        "biophysical" — per-NT kinetics and sign.
+        "shiu" — uniform kinetics, sign-only distinction.
+
+    Returns
+    -------
+    pd.DataFrame
+        Input with added physiology columns.
+    """
+    if "dominant_nt" not in edges.columns:
+        raise ValueError(
+            "Edge list lacks 'dominant_nt' column. "
+            "Run assign_dominant_nt() from bravli.connectivity.edges first."
+        )
+
+    result = edges.copy()
+
+    if mode == "shiu":
+        result["sign"] = result["dominant_nt"].map(
+            lambda nt: simple_sign(nt, mode="shiu")
+        )
+        result["tau_syn"] = 5.0       # Shiu uniform
+        result["w_syn"] = 0.275       # mV per synapse
+        result["model_confidence"] = "N/A (Shiu simplified)"
+        LOG.info("Assigned Shiu-mode signs to %d edges", len(result))
+        return result
+
+    # Biophysical mode: per-NT parameters
+    signs = []
+    tau_rises = []
+    tau_decays = []
+    e_revs = []
+    g_peaks = []
+    confidences = []
+
+    for nt in result["dominant_nt"]:
+        if nt in SYNAPSE_DB:
+            model = SYNAPSE_DB[nt]
+            signs.append(model.sign)
+            tau_rises.append(model.tau_rise)
+            tau_decays.append(model.tau_decay)
+            e_revs.append(model.e_rev)
+            g_peaks.append(model.g_peak)
+            confidences.append(model.confidence)
+        else:
+            signs.append(0)
+            tau_rises.append(None)
+            tau_decays.append(None)
+            e_revs.append(None)
+            g_peaks.append(None)
+            confidences.append("UNKNOWN")
+
+    result["sign"] = signs
+    result["tau_rise"] = tau_rises
+    result["tau_decay"] = tau_decays
+    result["e_rev"] = e_revs
+    result["g_peak"] = g_peaks
+    result["model_confidence"] = confidences
+
+    LOG.info("Assigned biophysical models to %d edges "
+             "(HIGH: %d, MEDIUM: %d, LOW: %d)",
+             len(result),
+             sum(1 for c in confidences if c == "HIGH"),
+             sum(1 for c in confidences if c == "MEDIUM"),
+             sum(1 for c in confidences if c == "LOW"))
+    return result
+
+
+@evaluate_datasets
+def compute_synaptic_weights(edges, mode="shiu"):
+    """Compute effective synaptic weight for each edge.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with 'syn_count' and 'dominant_nt' columns.
+    mode : str
+        "shiu" — w = syn_count * sign * W_syn (0.275 mV).
+        "conductance" — w = syn_count * sign * g_peak (nS).
+
+    Returns
+    -------
+    pd.DataFrame
+        Input with 'weight' column added.
+    """
+    result = edges.copy()
+
+    if "sign" not in result.columns:
+        result = assign_synapse_models(result, mode="biophysical")
+
+    if mode == "shiu":
+        W_SYN = 0.275  # mV per synapse (Shiu et al. 2024)
+        shiu_signs = result["dominant_nt"].map(
+            lambda nt: simple_sign(nt, mode="shiu")
+        )
+        result["weight"] = result["syn_count"] * shiu_signs * W_SYN
+        LOG.info("Computed Shiu weights: range [%.2f, %.2f] mV",
+                 result["weight"].min(), result["weight"].max())
+
+    elif mode == "conductance":
+        g = result["g_peak"].fillna(0.0)
+        result["weight"] = result["syn_count"] * result["sign"] * g
+        LOG.info("Computed conductance weights: range [%.2f, %.2f] nS",
+                 result["weight"].min(), result["weight"].max())
+    else:
+        raise ValueError(f"Unknown mode '{mode}'. Use 'shiu' or 'conductance'.")
+
+    return result
+
+
+@evaluate_datasets
+def physiology_summary(edges):
+    """Summarize physiology assignments across the edge list.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Edge list with physiology columns (from assign_synapse_models).
+
+    Returns
+    -------
+    pd.DataFrame
+        Per-NT summary: count, total synapses, sign, confidence.
+    """
+    if "dominant_nt" not in edges.columns:
+        raise ValueError("No 'dominant_nt' column in edges")
+
+    rows = []
+    for nt, group in edges.groupby("dominant_nt"):
+        row = {
+            "nt_type": nt,
+            "n_edges": len(group),
+            "total_synapses": group["syn_count"].sum(),
+        }
+        if nt in SYNAPSE_DB:
+            model = SYNAPSE_DB[nt]
+            row["sign"] = model.sign
+            row["sign_label"] = model.sign_label
+            row["tau_rise_ms"] = model.tau_rise
+            row["tau_decay_ms"] = model.tau_decay
+            row["e_rev_mV"] = model.e_rev
+            row["g_peak_nS"] = model.g_peak
+            row["confidence"] = model.confidence
+        else:
+            row["sign"] = 0
+            row["sign_label"] = "unknown"
+            row["confidence"] = "UNKNOWN"
+        rows.append(row)
+
+    return (pd.DataFrame(rows)
+            .set_index("nt_type")
+            .sort_values("total_synapses", ascending=False))
+#+end_src
+
+* Tests
+
+#+begin_src python :tangle ../tests/test_physiology.py
+"""Tests for the physiology module: synapse models and assignment."""
+
+import pandas as pd
+import pytest
+
+from bravli.physiology.synapse_models import (
+    SynapseModel,
+    STPParams,
+    SYNAPSE_DB,
+    get_synapse_model,
+    list_models,
+    simple_sign,
+    HIGH, MEDIUM, LOW,
+)
+from bravli.physiology.assign import (
+    assign_synapse_models,
+    compute_synaptic_weights,
+    physiology_summary,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_annotated_edges():
+    """Edge list with dominant_nt already assigned (from Lesson 08)."""
+    return pd.DataFrame({
+        "pre_pt_root_id":  [1, 1, 2, 3, 4, 5],
+        "post_pt_root_id": [2, 3, 4, 5, 5, 6],
+        "neuropil":        ["MB", "MB", "AL", "MB", "LH", "LH"],
+        "syn_count":       [10, 3, 8, 2, 6, 1],
+        "dominant_nt":     [
+            "acetylcholine", "GABA", "acetylcholine",
+            "GABA", "glutamate", "dopamine",
+        ],
+    })
+
+
+# ---------------------------------------------------------------------------
+# SynapseModel tests
+# ---------------------------------------------------------------------------
+
+class TestSynapseModel:
+    def test_ach_model_exists(self):
+        model = get_synapse_model("acetylcholine")
+        assert model.sign == 1
+        assert model.is_fast
+        assert not model.is_modulatory
+
+    def test_gaba_model_exists(self):
+        model = get_synapse_model("GABA")
+        assert model.sign == -1
+        assert model.tau_decay > model.tau_rise
+        assert model.e_rev < 0
+
+    def test_glutamate_is_inhibitory(self):
+        model = get_synapse_model("glutamate")
+        assert model.sign == -1
+        assert model.e_rev < 0
+
+    def test_dopamine_is_modulatory(self):
+        model = get_synapse_model("dopamine")
+        assert model.sign == 0
+        assert model.is_modulatory
+        assert not model.is_fast
+        assert model.modulation_tau > 0
+
+    def test_unknown_nt_raises(self):
+        with pytest.raises(KeyError):
+            get_synapse_model("kryptonite")
+
+    def test_all_six_nts_present(self):
+        expected = {"acetylcholine", "GABA", "glutamate",
+                    "dopamine", "serotonin", "octopamine"}
+        assert set(SYNAPSE_DB.keys()) == expected
+
+    def test_to_dict(self):
+        model = get_synapse_model("acetylcholine")
+        d = model.to_dict()
+        assert d["nt_type"] == "acetylcholine"
+        assert d["sign"] == 1
+        assert "tau_rise_ms" in d
+        assert "stp_U" in d  # has STP params
+
+    def test_list_models(self):
+        models = list_models()
+        assert len(models) == 6
+        assert all("nt_type" in m for m in models)
+
+
+class TestSTPParams:
+    def test_default_stp(self):
+        stp = STPParams()
+        assert stp.U == 0.4
+        assert stp.tau_rec > 0
+        assert stp.confidence == LOW
+
+    def test_ach_has_facilitation(self):
+        model = get_synapse_model("acetylcholine")
+        assert model.stp is not None
+        assert model.stp.tau_fac > 0
+
+    def test_gaba_no_facilitation(self):
+        model = get_synapse_model("GABA")
+        assert model.stp is not None
+        assert model.stp.tau_fac == 0
+
+
+class TestSimpleSign:
+    def test_biophysical_mode(self):
+        assert simple_sign("acetylcholine") == 1
+        assert simple_sign("GABA") == -1
+        assert simple_sign("glutamate") == -1
+        assert simple_sign("dopamine") == 0
+
+    def test_shiu_mode(self):
+        assert simple_sign("acetylcholine", mode="shiu") == 1
+        assert simple_sign("GABA", mode="shiu") == -1
+        assert simple_sign("dopamine", mode="shiu") == 1
+        assert simple_sign("octopamine", mode="shiu") == 1
+
+
+# ---------------------------------------------------------------------------
+# Assignment tests
+# ---------------------------------------------------------------------------
+
+class TestAssignSynapseModels:
+    def test_biophysical_mode(self, sample_annotated_edges):
+        result = assign_synapse_models(sample_annotated_edges)
+        assert "sign" in result.columns
+        assert "tau_rise" in result.columns
+        assert "tau_decay" in result.columns
+        assert "e_rev" in result.columns
+        assert "g_peak" in result.columns
+        assert "model_confidence" in result.columns
+
+        # ACh edges should be excitatory
+        ach = result[result["dominant_nt"] == "acetylcholine"]
+        assert all(ach["sign"] == 1)
+        assert all(ach["tau_rise"] == 0.5)
+
+        # GABA edges should be inhibitory
+        gaba = result[result["dominant_nt"] == "GABA"]
+        assert all(gaba["sign"] == -1)
+
+        # DA edges should be modulatory (sign=0, no fast kinetics)
+        da = result[result["dominant_nt"] == "dopamine"]
+        assert all(da["sign"] == 0)
+        assert all(da["tau_rise"].isna())
+
+    def test_shiu_mode(self, sample_annotated_edges):
+        result = assign_synapse_models(sample_annotated_edges, mode="shiu")
+        assert "sign" in result.columns
+        assert "tau_syn" in result.columns
+        assert all(result["tau_syn"] == 5.0)
+
+        # Shiu treats DA as excitatory
+        da = result[result["dominant_nt"] == "dopamine"]
+        assert all(da["sign"] == 1)
+
+    def test_raises_without_dominant_nt(self):
+        df = pd.DataFrame({"syn_count": [10]})
+        with pytest.raises(ValueError, match="dominant_nt"):
+            assign_synapse_models(df)
+
+
+class TestComputeWeights:
+    def test_shiu_weights(self, sample_annotated_edges):
+        result = compute_synaptic_weights(sample_annotated_edges, mode="shiu")
+        assert "weight" in result.columns
+
+        # ACh edge with 10 syn: weight = 10 * 1 * 0.275 = 2.75
+        ach_10 = result[
+            (result["dominant_nt"] == "acetylcholine") &
+            (result["syn_count"] == 10)
+        ]
+        assert abs(ach_10.iloc[0]["weight"] - 2.75) < 0.01
+
+        # GABA edge with 3 syn: weight = 3 * -1 * 0.275 = -0.825
+        gaba_3 = result[
+            (result["dominant_nt"] == "GABA") &
+            (result["syn_count"] == 3)
+        ]
+        assert abs(gaba_3.iloc[0]["weight"] - (-0.825)) < 0.01
+
+    def test_conductance_weights(self, sample_annotated_edges):
+        result = compute_synaptic_weights(
+            sample_annotated_edges, mode="conductance"
+        )
+        assert "weight" in result.columns
+
+        # ACh: g_peak=0.4, sign=1, syn_count=10 → weight = 4.0
+        ach_10 = result[
+            (result["dominant_nt"] == "acetylcholine") &
+            (result["syn_count"] == 10)
+        ]
+        assert abs(ach_10.iloc[0]["weight"] - 4.0) < 0.01
+
+
+class TestPhysiologySummary:
+    def test_summary_structure(self, sample_annotated_edges):
+        summary = physiology_summary(sample_annotated_edges)
+        assert "acetylcholine" in summary.index
+        assert "GABA" in summary.index
+        assert "n_edges" in summary.columns
+        assert "total_synapses" in summary.columns
+        assert "confidence" in summary.columns
+
+    def test_synapse_totals(self, sample_annotated_edges):
+        summary = physiology_summary(sample_annotated_edges)
+        ach = summary.loc["acetylcholine"]
+        assert ach["n_edges"] == 2
+        assert ach["total_synapses"] == 18  # 10 + 8
+#+end_src
+
+* Key Design Decisions
+
+| Decision                                    | Rationale                                                                |
+|---------------------------------------------+--------------------------------------------------------------------------|
+| Frozen dataclasses for SynapseModel/STP     | Immutable parameter records — same philosophy as Fact namedtuple.        |
+| Confidence tags on every parameter          | Makes the evidence gap explicit. No false precision.                     |
+| Glutamate default = inhibitory              | GluCl predominates in Drosophila central brain. Consistent with Shiu.    |
+| Aminergic sign = 0 (modulatory)             | Biophysically correct. Shiu's sign=+1 is a simplification, not biology. |
+| Dual mode: "biophysical" vs "shiu"          | Supports both detailed simulation and Shiu-compatible analysis.          |
+| No NetworkX/graph dependency                | Pure pandas. Graph libraries come in later phases.                       |
+| STP parameters included but LOW confidence  | Structure is ready for when data arrives. Values are placeholders.       |
+
+* Running the Lesson
+
+** Quick exploration
+
+#+begin_src python :tangle no :eval no
+from bravli.physiology import (
+    SYNAPSE_DB, get_synapse_model, list_models, simple_sign,
+)
+
+# Inspect the parameter database
+for model in SYNAPSE_DB.values():
+    print(f"{model.nt_type:15s}  sign={model.sign:+d}  "
+          f"fast={model.is_fast}  conf={model.confidence}")
+
+# Look at ACh in detail
+ach = get_synapse_model("acetylcholine")
+print(ach.to_dict())
+
+# Assign to real edge data (from Lesson 08)
+from bravli.connectivity import load_edges, threshold_edges, assign_dominant_nt
+from bravli.physiology import assign_synapse_models, physiology_summary
+
+edges = load_edges("data/zenodo/proofread_connections_783.feather")
+edges = threshold_edges(edges, min_syn=5)
+edges = assign_dominant_nt(edges)
+edges = assign_synapse_models(edges)
+
+print(physiology_summary(edges))
+#+end_src
+
+** Tests
+
+#+begin_src bash :tangle no
+pytest tests/test_physiology.py -v
+#+end_src
+
+* Exercises for the Reader
+
+1. *E/I balance with proper reversal potentials*: Using the biophysical model
+   parameters, compute the effective drive (not just sign) per neuropil. An inhibitory
+   synapse at E_rev=-45 mV with the membrane at -52 mV produces a much weaker current
+   than an excitatory synapse at E_rev=0 mV. Does accounting for reversal potentials
+   change which neuropils appear "most inhibitory"?
+
+2. *Sensitivity analysis*: The GluCl parameters are LOW confidence. Try varying
+   tau_decay from 3 ms to 10 ms and see how it changes the effective time-averaged
+   inhibitory drive in neuropils where glutamate dominates.
+
+3. *Shiu vs biophysical comparison*: Compute Shiu-mode weights and biophysical-mode
+   weights for the same edge list. Scatter-plot them against each other. Where do
+   they diverge most? (Hint: modulatory NTs and the ACh-vs-GABA kinetic asymmetry.)
+
+4. *STP exploration*: Using the Tsodyks-Markram equations, simulate a train of spikes
+   at 20 Hz through the ACh model (facilitating) and the GABA model (depressing).
+   Plot the effective weight over time. How many spikes until the ACh synapse reaches
+   peak facilitation?
+
+5. *Literature dive*: The parameter gap is real. Search the Drosophila electrophysiology
+   literature for any central synapse recordings not cited here. Can you find data for
+   GluCl kinetics in any insect species? What about STP at identified central synapses?
+
+* Bibliography
+
+- Su H, O'Dowd DK (2003). Fast synaptic currents in Drosophila mushroom body
+  Kenyon cells are mediated by alpha-bungarotoxin-sensitive nicotinic acetylcholine
+  receptors and picrotoxin-sensitive GABA receptors. /J Neurosci/ 23(27):9246-53.
+- Lee D, O'Dowd DK (2000). cAMP-dependent plasticity at excitatory cholinergic
+  synapses in Drosophila neurons. /J Neurosci/ 20(2):RC85.
+- Lee D, Su H, O'Dowd DK (2003). GABA receptors containing Rdl subunits mediate
+  fast inhibitory synaptic transmission in Drosophila neurons. /J Neurosci/
+  23(11):4625-34.
+- Han Y et al. (2024). Gating kinetics of Drosophila glutamate receptors with Neto.
+  /PNAS/ 121(50).
+- Hallermann S et al. (2010). Naked dense bodies provoke depression. /J Neurosci/
+  30(43):14521-30.
+- Shiu PK et al. (2024). A Drosophila computational brain model reveals sensorimotor
+  processing. /Nature/ 634:210-219.
+- Eckstein N et al. (2024). Neurotransmitter classification from electron microscopy
+  images at synaptic sites in Drosophila melanogaster. /Cell/ 187(18):4979-94.
+- Yamamoto S, Seto ES (2014). Dopamine dynamics and signaling in Drosophila.
+  /Front Biosci (Landmark Ed)/ 19:1303-16.
+- Roeder T (2005). Tyramine and octopamine: ruling behavior and metabolism.
+  /Annu Rev Entomol/ 50:447-77.
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 09-synaptic-physiology
+tag: lesson/09-synaptic-physiology
+files_created:
+  - bravli/physiology/__init__.py
+  - bravli/physiology/synapse_models.py
+  - bravli/physiology/assign.py
+  - tests/test_physiology.py
+verification:
+  - "python -c 'from bravli.physiology import SYNAPSE_DB, assign_synapse_models' succeeds"
+  - "pytest tests/test_physiology.py -v — all tests pass"
+next_lesson: 10-cell-models
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

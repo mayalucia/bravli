@@ -39,7 +39,7 @@ exploration.
 | =explore/=        | Done   | Mushroom body deep dive                            |
 | =atlas/=          | Done   | Neuropil meshes + skeleton rendering               |
 | =connectivity/=   | Done    | Edge list loading, neuropil matrices, pathways     |
-| =physiology/=     | Planned | NT-based synaptic parameters                      |
+| =physiology/=     | Done    | Synapse models, NT-to-biophysics DB, assignment    |
 | =models/=         | Planned | Cell electrical models (LIF, graded)              |
 | =simulation/=     | Planned | Whole-brain circuit simulation                    |
 
@@ -58,6 +58,7 @@ Source files are tangled from these.
 |     06 | =06-atlas.org=                | Neuropil meshes + skeleton morphologies  |
 |     07 | =07-plan-fly-brain-2026.org=  | Roadmap: BBP pipeline mapped to fly      |
 |     08 | =08-connectivity.org=         | Edge list, neuropil matrices, pathways   |
+|     09 | =09-synaptic-physiology.org=  | NT-to-biophysics synapse parameter DB    |
 
 *** Data (=data/=, not committed)
 | Asset                                      | Size  | Auth needed? |
@@ -74,7 +75,7 @@ Source files are tangled from these.
 - =whole_brain_atlas_with_neurons.html= --- full atlas + neuron morphologies
 
 *** Tests (=tests/=)
-7 test files covering all modules. Tests that require the Zenodo parquet or
+9 test files covering all modules (105 tests). Tests that require the Zenodo parquet or
 =fafbseg= are conditionally skipped.
 
 ** Origin Story
@@ -104,7 +105,7 @@ Transcripts of the session are at:
 |-------+---------------------------+---------+----------------------------------------|
 |     0 | Foundation (lessons 00-06) | Done    | 3D atlas, factsheets, tests            |
 |     1 | Connectivity analysis      | Done    | Edge list, neuropil matrix, pathways   |
-|     2 | Synaptic physiology        | Planned | NT-based synapse parameter database    |
+|     2 | Synaptic physiology        | Done    | Per-NT synapse models + assignment      |
 |     3 | Cell electrical models     | Planned | LIF/graded models per cell type class  |
 |     4 | Circuit simulation         | Planned | Whole-brain LIF on laptop              |
 |     5 | Digital twin portal        | Planned | Interactive exploration tool            |
@@ -117,8 +118,10 @@ Transcripts of the session are at:
    connectivity matrix, pathway analysis, NT classification
 3. [X] Acquire synapse data (Zenodo feather, 852 MB, auth-free)
 4. [X] Build =bravli/connectivity/= module (edges, matrix, pathways)
-5. [ ] Write =codev/09-synaptic-physiology.org=
-6. [ ] Build =bravli/physiology/= module
+5. [X] Write =codev/09-synaptic-physiology.org=
+6. [X] Build =bravli/physiology/= module (synapse_models, assign)
+7. [ ] Write =codev/10-cell-models.org=
+8. [ ] Build =bravli/models/= module
 
 ** Dependencies
 
@@ -161,6 +164,21 @@ is applied. MayaPortal will eventually provide the rendering backend.
 - Created =develop/devlog.org= (this file)
 - Initialized git repository
 - Initial commit: Phase 0 complete
+
+** <2026-02-19 Wed> Phase 2 — Synaptic physiology
+- Built =bravli/physiology/= module:
+  - =synapse_models.py=: SynapseModel + STPParams frozen dataclasses,
+    SYNAPSE_DB with all 6 NT types, confidence annotations
+  - =assign.py=: assign biophysical or Shiu-mode parameters to edges,
+    compute synaptic weights, physiology summary
+- Parameter sources:
+  - ACh (HIGH): Su & O'Dowd 2003, Lee & O'Dowd 2000 — Kenyon cell nAChR
+  - GABA (HIGH): Lee et al. 2003 — Rdl GABA_A fast inhibition
+  - Glutamate (LOW): GluCl kinetics inferred from GABA_A analogy
+  - Aminergic (MEDIUM): modulatory, modeled as gain modulation
+  - Shiu et al. 2024: reference LIF params (tau_syn=5ms, W_syn=0.275mV)
+- Wrote =codev/09-synaptic-physiology.org= — literate lesson
+- 20 new tests, all passing (105 total, 2 skipped)
 
 ** <2026-02-19 Wed> Phase 1 — Connectivity analysis
 - Downloaded =proofread_connections_783.feather= from Zenodo (852 MB, auth-free)
