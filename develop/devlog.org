@@ -42,6 +42,7 @@ exploration.
 | =physiology/=     | Done    | Synapse models, NT-to-biophysics DB, assignment    |
 | =models/=         | Done    | Cell electrical models (LIF, graded, CellModelDB) |
 | =simulation/=     | Done    | Pure-numpy LIF engine, circuit assembly, analysis |
+| =portal/=         | Done    | Interactive digital twin exploration (Panel)       |
 
 *** Literate Source (=codev/=)
 Each lesson is an Org file that teaches the science /and/ specifies the code.
@@ -61,6 +62,7 @@ Source files are tangled from these.
 |     09 | =09-synaptic-physiology.org=  | NT-to-biophysics synapse parameter DB    |
 |     10 | =10-cell-models.org=          | LIF + graded point neuron models         |
 |     11 | =11-simulation.org=           | Whole-brain LIF simulation engine        |
+|     12 | =12-portal.org=               | Interactive digital twin portal          |
 
 *** Data (=data/=, not committed)
 | Asset                                      | Size  | Auth needed? |
@@ -77,7 +79,7 @@ Source files are tangled from these.
 - =whole_brain_atlas_with_neurons.html= --- full atlas + neuron morphologies
 
 *** Tests (=tests/=)
-11 test files covering all modules (149 tests). Tests that require the Zenodo parquet or
+12 test files covering all modules (160 tests). Tests that require the Zenodo parquet or
 =fafbseg= are conditionally skipped.
 
 ** Origin Story
@@ -110,7 +112,7 @@ Transcripts of the session are at:
 |     2 | Synaptic physiology        | Done    | Per-NT synapse models + assignment      |
 |     3 | Cell electrical models     | Done    | LIF/graded models per cell type class  |
 |     4 | Circuit simulation         | Done    | Pure-numpy LIF engine on laptop        |
-|     5 | Digital twin portal        | Planned | Interactive exploration tool            |
+|     5 | Digital twin portal        | Done    | Panel-based interactive exploration     |
 |     6 | WebGPU visualization       | Future  | MayaPortal integration                 |
 
 ** Immediate Next Steps
@@ -181,6 +183,23 @@ is applied. MayaPortal will eventually provide the rendering backend.
   - Shiu et al. 2024: reference LIF params (tau_syn=5ms, W_syn=0.275mV)
 - Wrote =codev/09-synaptic-physiology.org= — literate lesson
 - 20 new tests, all passing (105 total, 2 skipped)
+
+** <2026-02-19 Wed> Phase 5 — Digital twin portal
+- Built =bravli/portal/= module (Panel framework):
+  - =views.py=: Five reactive view builders — atlas, composition, connectivity,
+    physiology, simulate — each returning composable Panel layouts
+  - =app.py=: =build_portal()= assembles tabs, auto-discovers annotation data
+- Five methodology-mirroring tabs (BBP portal pattern):
+  1. Atlas: neuropil highlighting, region selector, 3D placeholder
+  2. Composition: group-by selector, bar chart, NT pie, cell type table
+  3. Connectivity: neuropil filter, synapse histogram, NT breakdown, top pathways
+  4. Physiology: synapse model DB table, E/I weight distribution
+  5. Simulate: duration/stimulus controls, run button, raster + rate + V traces
+- Pedagogical design: provocative marginalia in every tab — questions, not answers
+- Demo circuit (100 neurons, 80E/20I) as fallback when no data loaded
+- Wrote =codev/12-portal.org= — literate lesson on portal design philosophy
+- 11 new tests, all passing (160 total, 2 skipped)
+- New dependency: panel >= 1.0 (+ bokeh, plotly)
 
 ** <2026-02-19 Wed> Phase 4 — Circuit simulation
 - Built =bravli/simulation/= module (pure numpy, zero new dependencies):
