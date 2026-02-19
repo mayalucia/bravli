@@ -41,7 +41,7 @@ exploration.
 | =connectivity/=   | Done    | Edge list loading, neuropil matrices, pathways     |
 | =physiology/=     | Done    | Synapse models, NT-to-biophysics DB, assignment    |
 | =models/=         | Done    | Cell electrical models (LIF, graded, CellModelDB) |
-| =simulation/=     | Planned | Whole-brain circuit simulation                    |
+| =simulation/=     | Done    | Pure-numpy LIF engine, circuit assembly, analysis |
 
 *** Literate Source (=codev/=)
 Each lesson is an Org file that teaches the science /and/ specifies the code.
@@ -60,6 +60,7 @@ Source files are tangled from these.
 |     08 | =08-connectivity.org=         | Edge list, neuropil matrices, pathways   |
 |     09 | =09-synaptic-physiology.org=  | NT-to-biophysics synapse parameter DB    |
 |     10 | =10-cell-models.org=          | LIF + graded point neuron models         |
+|     11 | =11-simulation.org=           | Whole-brain LIF simulation engine        |
 
 *** Data (=data/=, not committed)
 | Asset                                      | Size  | Auth needed? |
@@ -76,7 +77,7 @@ Source files are tangled from these.
 - =whole_brain_atlas_with_neurons.html= --- full atlas + neuron morphologies
 
 *** Tests (=tests/=)
-10 test files covering all modules (126 tests). Tests that require the Zenodo parquet or
+11 test files covering all modules (149 tests). Tests that require the Zenodo parquet or
 =fafbseg= are conditionally skipped.
 
 ** Origin Story
@@ -108,7 +109,7 @@ Transcripts of the session are at:
 |     1 | Connectivity analysis      | Done    | Edge list, neuropil matrix, pathways   |
 |     2 | Synaptic physiology        | Done    | Per-NT synapse models + assignment      |
 |     3 | Cell electrical models     | Done    | LIF/graded models per cell type class  |
-|     4 | Circuit simulation         | Planned | Whole-brain LIF on laptop              |
+|     4 | Circuit simulation         | Done    | Pure-numpy LIF engine on laptop        |
 |     5 | Digital twin portal        | Planned | Interactive exploration tool            |
 |     6 | WebGPU visualization       | Future  | MayaPortal integration                 |
 
@@ -180,6 +181,23 @@ is applied. MayaPortal will eventually provide the rendering backend.
   - Shiu et al. 2024: reference LIF params (tau_syn=5ms, W_syn=0.275mV)
 - Wrote =codev/09-synaptic-physiology.org= — literate lesson
 - 20 new tests, all passing (105 total, 2 skipped)
+
+** <2026-02-19 Wed> Phase 4 — Circuit simulation
+- Built =bravli/simulation/= module (pure numpy, zero new dependencies):
+  - =circuit.py=: Circuit dataclass, build_circuit from bravli pipeline,
+    build_circuit_from_edges for quick Shiu-style assembly
+  - =engine.py=: Vectorized LIF with Euler integration, heterogeneous per-neuron
+    parameters, circular delay buffer, np.add.at spike delivery
+  - =stimulus.py=: Poisson, step, pulse protocols with provenance tracking
+  - =analysis.py=: firing_rates, spike_raster, ei_balance, active_fraction,
+    population_rate
+- Key design: no Brian2 dependency — the Feynman imperative. LIF core is ~30 lines.
+  Shiu achieved ~5 min/s with Brian2+C++; we estimate ~10-30 min/s in numpy.
+- Fixed delay buffer bug: clear-after-read, not clear-on-write
+- Zhang et al. 2024 (iScience) confirms network topology dominates over
+  neuron model choice — LIF vs Izhikevich vs sigmoid produce same patterns
+- Wrote =codev/11-simulation.org= — literate lesson
+- 23 new tests, all passing (149 total, 2 skipped)
 
 ** <2026-02-19 Wed> Phase 3 — Cell electrical models
 - Built =bravli/models/= module:

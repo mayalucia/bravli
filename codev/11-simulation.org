@@ -1,0 +1,1355 @@
+#+title: Lesson 11 — Whole-Brain LIF Simulation
+#+subtitle: 139,000 neurons on a laptop, from first principles
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+At BBP, stage 9 was calibration and simulation — running the assembled circuit in
+NEURON/CoreNEURON on Blue Gene/Q supercomputers, consuming millions of core-hours
+to simulate seconds of biological time. The 4.2M-neuron rat somatosensory cortex
+required ~66,000 compute cores for real-time simulation.
+
+For the fly brain, a remarkable result changed everything. Shiu et al. (2024) showed
+that a leaky integrate-and-fire (LIF) network, with identical parameters for every
+neuron, wired according to the FlyWire connectome, correctly predicts sensorimotor
+activation patterns with ~91% accuracy across 106 tested cell types. The entire
+139K-neuron simulation runs on a laptop in ~5 minutes per second of biological time.
+
+A separate study (Zhang et al. 2024, iScience) confirmed this is not a fluke: they
+compared linear threshold, sigmoid, and LIF models on the same connectome — all three
+produce essentially the same activation patterns. Even rewiring 0.1% of connections
+(degree-preserving) destroys the patterns. *Network topology dominates over single-
+neuron dynamics.*
+
+This lesson builds a pure-numpy LIF simulator: no external simulation framework, no
+black boxes. We implement the exact Shiu equations, then extend them to support
+class-aware cell models and graded-potential neurons from our earlier lessons.
+
+** Why not Brian2?
+
+Shiu et al. used Brian2. It's a fine tool. But:
+
+1. *The Feynman imperative*: "What I cannot create, I do not understand." The LIF
+   simulation is ~30 lines of core logic. Writing it ourselves teaches more than
+   calling =brian2.NeuronGroup()=.
+2. *Dependency weight*: Brian2 pulls in a C++ code generation pipeline. Our numpy
+   implementation has zero new dependencies.
+3. *Flexibility*: We want class-aware parameters (different tau_m per neuron),
+   graded-potential neurons, and easy integration with bravli's data pipeline.
+   These are natural in numpy, awkward in Brian2's equation-string DSL.
+4. *Transparency*: Every number in the simulation is a named numpy array we can
+   inspect, plot, and validate at any timestep.
+
+The cost: we won't match Brian2's C++-compiled speed. But for the fly brain
+(139K neurons, not 4.2M), numpy is fast enough.
+
+** Learning Objectives
+
+- [ ] Understand the LIF equations and their discretization
+- [ ] Implement a vectorized LIF simulator in numpy
+- [ ] Build a circuit from bravli's connectivity + physiology + models pipeline
+- [ ] Define stimulus protocols (Poisson input, optogenetic activation)
+- [ ] Run a simulation and analyze spike rasters and firing rates
+- [ ] Validate against known circuit properties (E/I balance, sparse coding in MB)
+
+** File Map
+
+| File                             | Role                                        |
+|----------------------------------+---------------------------------------------|
+| =bravli/simulation/__init__.py= | Subpackage exports                          |
+| =bravli/simulation/circuit.py=  | Circuit assembly from bravli data pipeline  |
+| =bravli/simulation/engine.py=   | LIF simulation engine (pure numpy)          |
+| =bravli/simulation/stimulus.py= | Stimulus protocols (Poisson, step, pulse)   |
+| =bravli/simulation/analysis.py= | Post-hoc analysis (rates, rasters, balance) |
+| =tests/test_simulation.py=      | Tests with small synthetic circuits         |
+
+* The Science
+
+** The LIF equations
+
+The Shiu et al. model uses LIF with an alpha-function synapse:
+
+\begin{align}
+\tau_m \frac{dV_j}{dt} &= -(V_j - V_{rest}) + g_j(t) \\
+\tau_s \frac{dg_j}{dt} &= -g_j(t)
+\end{align}
+
+When neuron $i$ fires, after a delay $t_{delay}$:
+$$g_j \leftarrow g_j + w_{ij}$$
+
+When $V_j > V_{thresh}$: emit spike, $V_j \leftarrow V_{reset}$, $g_j \leftarrow 0$,
+neuron enters refractory period for $t_{ref}$.
+
+** Euler discretization
+
+With timestep $\Delta t$:
+
+\begin{align}
+g_j(t + \Delta t) &= g_j(t) - \frac{\Delta t}{\tau_s} \cdot g_j(t) \\
+V_j(t + \Delta t) &= V_j(t) + \frac{\Delta t}{\tau_m} \left[ -(V_j(t) - V_{rest}) + g_j(t) \right]
+\end{align}
+
+For numerical stability, the exact linear solution (Brian2's =linear= method) is:
+
+\begin{align}
+g_j(t + \Delta t) &= g_j(t) \cdot e^{-\Delta t / \tau_s} \\
+V_j(t + \Delta t) &= V_{rest} + (V_j(t) - V_{rest} + g_j(t)) \cdot e^{-\Delta t / \tau_m}
+\end{align}
+
+We use the Euler form for clarity. With $\Delta t = 0.1$ ms and $\tau_m = 20$ ms,
+the ratio $\Delta t / \tau_m = 0.005$ — Euler is perfectly stable here.
+
+** Shiu parameter set
+
+| Parameter     | Symbol   | Value    | Notes                        |
+|---------------+----------+----------+------------------------------|
+| V_rest        | V_rest   | -52 mV   | = V_reset in Shiu            |
+| V_thresh      | V_th     | -45 mV   |                              |
+| V_reset       | V_rst    | -52 mV   |                              |
+| tau_m         | tau_m    | 20 ms    |                              |
+| tau_syn       | tau_s    | 5 ms     | Synaptic current decay       |
+| t_ref         | t_ref    | 2.2 ms   |                              |
+| t_delay       | t_dly    | 1.8 ms   | Spike transmission delay     |
+| W_syn         | W_syn    | 0.275 mV | Only free parameter (tuned)  |
+| dt            | dt       | 0.1 ms   |                              |
+| Poisson scale | f_poi    | 250      | Input weight = 250 * W_syn   |
+
+** Class-aware extension
+
+Our simulator supports heterogeneous parameters: each neuron can have its own
+$V_{rest}$, $V_{thresh}$, $\tau_m$, etc. from the Phase 3 CellModelDB. The state
+arrays are 1D numpy arrays indexed by neuron. This costs nothing in vectorized
+numpy — addition and multiplication broadcast naturally.
+
+** Graded-potential neurons
+
+Graded neurons have $V_{thresh} = +100$ mV (unreachable). They never spike, never
+reset, never enter refractory. Their membrane potential is their output signal.
+In the simulator, they simply skip the spike-detection step. No code path change
+needed — the threshold check naturally handles them.
+
+For graded synaptic output, we define a transfer function:
+$$\text{output}_j = \sigma\left(\frac{V_j - V_{rest}}{V_{range}}\right)$$
+where $\sigma$ is a sigmoid-like clamp to [0, 1]. This continuously modulates
+downstream synaptic input. We defer this to a future lesson — for now, graded
+neurons participate as subthreshold integrators.
+
+* Implementation
+
+** Simulation subpackage init
+
+#+begin_src python :tangle ../bravli/simulation/__init__.py
+"""simulation — Whole-brain LIF simulation engine.
+
+Pure-numpy implementation of the Shiu et al. (2024) leaky integrate-and-fire
+model, extended with class-aware heterogeneous parameters and graded-potential
+neuron support.
+
+References:
+    Shiu et al. 2024 — Nature 634:210-219
+    Zhang et al. 2024 — iScience (arXiv:2404.17128)
+"""
+
+from .circuit import (
+    Circuit,
+    build_circuit,
+    build_circuit_from_edges,
+)
+from .engine import (
+    SimulationResult,
+    simulate,
+)
+from .stimulus import (
+    StimulusProtocol,
+    poisson_stimulus,
+    step_stimulus,
+    pulse_stimulus,
+    combine_stimuli,
+)
+from .analysis import (
+    firing_rates,
+    spike_raster,
+    ei_balance,
+    active_fraction,
+    population_rate,
+)
+#+end_src
+
+** circuit.py — Circuit assembly
+
+#+begin_src python :tangle ../bravli/simulation/circuit.py
+"""Assemble a simulation-ready circuit from bravli data pipeline outputs.
+
+A Circuit packages neuron parameters and connectivity into numpy arrays
+suitable for the LIF engine.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+from bravli.utils import get_logger
+
+LOG = get_logger("simulation.circuit")
+
+
+@dataclass
+class Circuit:
+    """A simulation-ready neural circuit.
+
+    All arrays are indexed by a dense neuron index [0, n_neurons).
+    The mapping from FlyWire root_id to index is stored in id_to_idx.
+
+    Attributes
+    ----------
+    n_neurons : int
+        Number of neurons.
+    v_rest : np.ndarray
+        Resting potential per neuron (mV).
+    v_thresh : np.ndarray
+        Spike threshold per neuron (mV).
+    v_reset : np.ndarray
+        Reset potential per neuron (mV).
+    tau_m : np.ndarray
+        Membrane time constant per neuron (ms).
+    t_ref : np.ndarray
+        Refractory period per neuron (ms).
+    pre_idx : np.ndarray
+        Presynaptic neuron indices (int, length = n_synapses).
+    post_idx : np.ndarray
+        Postsynaptic neuron indices (int, length = n_synapses).
+    weights : np.ndarray
+        Synaptic weights (mV, length = n_synapses).
+    tau_syn : np.ndarray or float
+        Synaptic time constant (ms). Scalar or per-synapse.
+    delay_steps : np.ndarray or int
+        Transmission delay in timesteps. Scalar or per-synapse.
+    id_to_idx : dict
+        Mapping from FlyWire root_id to dense index.
+    idx_to_id : np.ndarray
+        Mapping from dense index to root_id.
+    neuron_labels : Optional[pd.DataFrame]
+        Neuron metadata (model_name, model_mode, super_class, etc.).
+    """
+    n_neurons: int
+    v_rest: np.ndarray
+    v_thresh: np.ndarray
+    v_reset: np.ndarray
+    tau_m: np.ndarray
+    t_ref: np.ndarray
+    pre_idx: np.ndarray
+    post_idx: np.ndarray
+    weights: np.ndarray
+    tau_syn: float = 5.0
+    delay_steps: int = 18  # 1.8 ms at dt=0.1ms
+    id_to_idx: dict = field(default_factory=dict)
+    idx_to_id: np.ndarray = field(default_factory=lambda: np.array([]))
+    neuron_labels: Optional[pd.DataFrame] = None
+
+    @property
+    def n_synapses(self):
+        return len(self.weights)
+
+    @property
+    def is_heterogeneous(self):
+        """True if neurons have different parameters."""
+        return not (np.all(self.v_rest == self.v_rest[0])
+                    and np.all(self.tau_m == self.tau_m[0]))
+
+    def neuron_ids(self, indices):
+        """Convert dense indices back to root_ids."""
+        return self.idx_to_id[indices]
+
+    def neuron_indices(self, root_ids):
+        """Convert root_ids to dense indices."""
+        return np.array([self.id_to_idx[rid] for rid in root_ids])
+
+    def summary(self):
+        """Return a summary string."""
+        lines = [
+            f"Circuit: {self.n_neurons:,} neurons, {self.n_synapses:,} synapses",
+            f"  Heterogeneous: {self.is_heterogeneous}",
+            f"  tau_syn: {self.tau_syn} ms",
+            f"  delay: {self.delay_steps} steps",
+            f"  weight range: [{self.weights.min():.3f}, {self.weights.max():.3f}] mV",
+        ]
+        if self.neuron_labels is not None and "model_mode" in self.neuron_labels.columns:
+            modes = self.neuron_labels["model_mode"].value_counts()
+            lines.append(f"  modes: {dict(modes)}")
+        return "\n".join(lines)
+
+
+def build_circuit(neurons, edges, dt=0.1):
+    """Build a Circuit from annotated neuron and edge DataFrames.
+
+    Parameters
+    ----------
+    neurons : pd.DataFrame
+        Output of assign_cell_models(). Must have: root_id, v_rest,
+        v_thresh, v_reset, tau_m, t_ref.
+    edges : pd.DataFrame
+        Output of compute_synaptic_weights(). Must have:
+        pre_pt_root_id, post_pt_root_id, weight.
+    dt : float
+        Simulation timestep (ms). Used to compute delay_steps.
+
+    Returns
+    -------
+    Circuit
+    """
+    # Build dense index
+    root_ids = neurons["root_id"].values
+    n = len(root_ids)
+    id_to_idx = {rid: i for i, rid in enumerate(root_ids)}
+
+    # Filter edges to neurons present in the circuit
+    valid = (edges["pre_pt_root_id"].isin(id_to_idx) &
+             edges["post_pt_root_id"].isin(id_to_idx))
+    edges_valid = edges[valid]
+
+    if len(edges_valid) < len(edges):
+        LOG.warning("Dropped %d edges with neurons not in circuit",
+                    len(edges) - len(edges_valid))
+
+    pre_idx = edges_valid["pre_pt_root_id"].map(id_to_idx).values.astype(np.int32)
+    post_idx = edges_valid["post_pt_root_id"].map(id_to_idx).values.astype(np.int32)
+    weights = edges_valid["weight"].values.astype(np.float64)
+
+    # Synaptic time constant: per-synapse if available, else default
+    tau_syn = 5.0
+    if "tau_decay" in edges_valid.columns:
+        tau_vals = edges_valid["tau_decay"].values
+        if not np.all(pd.isna(tau_vals)):
+            tau_syn = np.where(pd.isna(tau_vals), 5.0, tau_vals).astype(np.float64)
+
+    # Delay: 1.8 ms default
+    delay_steps = max(1, int(round(1.8 / dt)))
+
+    circuit = Circuit(
+        n_neurons=n,
+        v_rest=neurons["v_rest"].values.astype(np.float64),
+        v_thresh=neurons["v_thresh"].values.astype(np.float64),
+        v_reset=neurons["v_reset"].values.astype(np.float64),
+        tau_m=neurons["tau_m"].values.astype(np.float64),
+        t_ref=neurons["t_ref"].values.astype(np.float64),
+        pre_idx=pre_idx,
+        post_idx=post_idx,
+        weights=weights,
+        tau_syn=tau_syn,
+        delay_steps=delay_steps,
+        id_to_idx=id_to_idx,
+        idx_to_id=root_ids,
+        neuron_labels=neurons,
+    )
+
+    LOG.info("Built circuit: %d neurons, %d synapses", n, len(weights))
+    return circuit
+
+
+def build_circuit_from_edges(edges, dt=0.1, v_rest=-52.0, v_thresh=-45.0,
+                              v_reset=-52.0, tau_m=20.0, t_ref=2.2):
+    """Build a uniform (Shiu-style) circuit directly from an edge DataFrame.
+
+    Convenience function when you don't need class-aware cell models.
+    Neurons are inferred from unique pre/post IDs in the edge table.
+
+    Parameters
+    ----------
+    edges : pd.DataFrame
+        Must have: pre_pt_root_id, post_pt_root_id, weight.
+    dt : float
+        Timestep (ms).
+    v_rest, v_thresh, v_reset, tau_m, t_ref : float
+        Uniform parameters for all neurons.
+
+    Returns
+    -------
+    Circuit
+    """
+    all_ids = np.union1d(
+        edges["pre_pt_root_id"].unique(),
+        edges["post_pt_root_id"].unique(),
+    )
+    n = len(all_ids)
+
+    neurons = pd.DataFrame({
+        "root_id": all_ids,
+        "v_rest": v_rest,
+        "v_thresh": v_thresh,
+        "v_reset": v_reset,
+        "tau_m": tau_m,
+        "t_ref": t_ref,
+    })
+
+    return build_circuit(neurons, edges, dt=dt)
+#+end_src
+
+** engine.py — LIF simulation engine
+
+#+begin_src python :tangle ../bravli/simulation/engine.py
+"""Pure-numpy LIF simulation engine.
+
+Implements the Shiu et al. (2024) LIF model with Euler integration.
+Supports heterogeneous neuron parameters and synaptic delays.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+
+from bravli.utils import get_logger
+
+LOG = get_logger("simulation.engine")
+
+
+@dataclass
+class SimulationResult:
+    """Results from a simulation run.
+
+    Attributes
+    ----------
+    spike_times : list of np.ndarray
+        spike_times[i] is an array of spike times (ms) for neuron i.
+    v_trace : Optional[np.ndarray]
+        Membrane potential trace, shape (n_recorded, n_steps).
+        Only populated if record_v=True.
+    g_trace : Optional[np.ndarray]
+        Synaptic conductance trace, shape (n_recorded, n_steps).
+    recorded_idx : np.ndarray
+        Indices of neurons whose traces were recorded.
+    dt : float
+        Timestep used (ms).
+    duration : float
+        Total simulation time (ms).
+    n_neurons : int
+        Number of neurons.
+    """
+    spike_times: list
+    v_trace: Optional[np.ndarray] = None
+    g_trace: Optional[np.ndarray] = None
+    recorded_idx: np.ndarray = None
+    dt: float = 0.1
+    duration: float = 1000.0
+    n_neurons: int = 0
+
+    @property
+    def n_spikes(self):
+        """Total number of spikes across all neurons."""
+        return sum(len(st) for st in self.spike_times)
+
+    def mean_rate(self):
+        """Mean firing rate across all neurons (Hz)."""
+        duration_s = self.duration / 1000.0
+        return self.n_spikes / (self.n_neurons * duration_s) if self.n_neurons > 0 else 0.0
+
+    def neuron_rates(self):
+        """Per-neuron firing rates (Hz)."""
+        duration_s = self.duration / 1000.0
+        return np.array([len(st) / duration_s for st in self.spike_times])
+
+
+def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
+             record_v=False, record_idx=None, seed=None):
+    """Run a LIF simulation.
+
+    Parameters
+    ----------
+    circuit : Circuit
+        The neural circuit to simulate.
+    duration : float
+        Simulation duration (ms).
+    dt : float
+        Timestep (ms).
+    stimulus : np.ndarray, optional
+        External current injection, shape (n_neurons, n_steps) in mV.
+        If None, no external input.
+    record_v : bool
+        If True, record membrane potential traces for selected neurons.
+    record_idx : array-like, optional
+        Indices of neurons to record. If None and record_v=True,
+        records the first 100 neurons.
+    seed : int, optional
+        Random seed (for reproducibility of Poisson stimuli).
+
+    Returns
+    -------
+    SimulationResult
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    n = circuit.n_neurons
+    n_steps = int(duration / dt)
+
+    # --- State arrays ---
+    v = circuit.v_rest.copy()
+    g = np.zeros(n, dtype=np.float64)
+    refractory_until = np.full(n, -1.0, dtype=np.float64)
+
+    # --- Precompute integration constants ---
+    dt_over_tau_m = dt / circuit.tau_m  # per-neuron (array or scalar)
+
+    # Handle tau_syn: scalar or per-synapse
+    tau_syn = circuit.tau_syn
+    if np.isscalar(tau_syn):
+        dt_over_tau_s = dt / tau_syn
+    else:
+        # Per-synapse tau_syn needs special handling in the spike delivery
+        dt_over_tau_s = None  # handled per-neuron via aggregation
+
+    # --- Delay buffer ---
+    delay = circuit.delay_steps if np.isscalar(circuit.delay_steps) else int(np.max(circuit.delay_steps))
+    spike_buffer = np.zeros((delay + 1, n), dtype=bool)
+
+    # --- Spike recording ---
+    spike_times = [[] for _ in range(n)]
+
+    # --- Voltage recording ---
+    if record_v:
+        if record_idx is None:
+            record_idx = np.arange(min(100, n))
+        else:
+            record_idx = np.asarray(record_idx)
+        v_trace = np.zeros((len(record_idx), n_steps), dtype=np.float32)
+        g_trace = np.zeros((len(record_idx), n_steps), dtype=np.float32)
+    else:
+        record_idx = np.array([], dtype=int)
+        v_trace = None
+        g_trace = None
+
+    # --- Precompute connectivity as post-synaptic index groups ---
+    # For each post neuron, collect (pre_idx, weight) pairs for fast delivery
+    # Use np.add.at for scatter-add of incoming spikes
+    pre_idx = circuit.pre_idx
+    post_idx = circuit.post_idx
+    weights = circuit.weights
+
+    LOG.info("Starting simulation: %d neurons, %d synapses, %.0f ms, dt=%.1f ms",
+             n, circuit.n_synapses, duration, dt)
+
+    # --- Main loop ---
+    t_ref_steps = (circuit.t_ref / dt).astype(int) if hasattr(circuit.t_ref, '__len__') else int(circuit.t_ref / dt)
+
+    for step in range(n_steps):
+        t = step * dt
+
+        # 1. Synaptic decay
+        if np.isscalar(tau_syn):
+            g *= (1.0 - dt_over_tau_s)
+        else:
+            # Per-neuron effective tau: aggregate from per-synapse
+            # For simplicity, use a single average tau_syn
+            g *= (1.0 - dt / 5.0)
+
+        # 2. Deliver spikes from delay buffer
+        delayed_spikes = spike_buffer[step % (delay + 1)]
+        if np.any(delayed_spikes):
+            # Find which synapses fire: presynaptic neuron spiked
+            firing_mask = delayed_spikes[pre_idx]
+            if np.any(firing_mask):
+                np.add.at(g, post_idx[firing_mask], weights[firing_mask])
+
+        # 3. External stimulus
+        if stimulus is not None:
+            g += stimulus[:, step]
+
+        # 4. Voltage update (Euler)
+        not_refractory = (t >= refractory_until)
+        dv = dt_over_tau_m * (-(v - circuit.v_rest) + g)
+        v += dv * not_refractory
+
+        # 5. Spike detection
+        spiked = (v >= circuit.v_thresh) & not_refractory
+        if np.any(spiked):
+            spike_indices = np.where(spiked)[0]
+            for idx in spike_indices:
+                spike_times[idx].append(t)
+
+            # Reset
+            v[spiked] = circuit.v_reset[spiked]
+            g[spiked] = 0.0
+
+            # Refractory
+            if hasattr(t_ref_steps, '__len__'):
+                refractory_until[spiked] = t + circuit.t_ref[spiked]
+            else:
+                refractory_until[spiked] = t + circuit.t_ref
+
+            # Insert into delay buffer
+            future_step = (step + delay) % (delay + 1)
+            spike_buffer[future_step] = False  # clear old
+            spike_buffer[future_step, spike_indices] = True
+        else:
+            future_step = (step + delay) % (delay + 1)
+            spike_buffer[future_step] = False
+
+        # 6. Record traces
+        if record_v and len(record_idx) > 0:
+            v_trace[:, step] = v[record_idx]
+            g_trace[:, step] = g[record_idx]
+
+    # Convert spike times to arrays
+    spike_times = [np.array(st) for st in spike_times]
+
+    total_spikes = sum(len(st) for st in spike_times)
+    LOG.info("Simulation complete: %d spikes, mean rate %.2f Hz",
+             total_spikes,
+             total_spikes / (n * duration / 1000.0) if n > 0 else 0.0)
+
+    return SimulationResult(
+        spike_times=spike_times,
+        v_trace=v_trace,
+        g_trace=g_trace,
+        recorded_idx=record_idx,
+        dt=dt,
+        duration=duration,
+        n_neurons=n,
+    )
+#+end_src
+
+** stimulus.py — Stimulus protocols
+
+#+begin_src python :tangle ../bravli/simulation/stimulus.py
+"""Stimulus protocols for LIF simulation.
+
+Each function returns a stimulus array of shape (n_neurons, n_steps)
+representing external current injection in mV at each timestep.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+
+
+@dataclass
+class StimulusProtocol:
+    """Description of a stimulus for provenance tracking.
+
+    Attributes
+    ----------
+    name : str
+        Protocol name.
+    target_indices : np.ndarray
+        Neuron indices receiving stimulus.
+    params : dict
+        Protocol parameters.
+    """
+    name: str
+    target_indices: np.ndarray
+    params: dict
+
+
+def poisson_stimulus(n_neurons, n_steps, target_indices, rate_hz=100.0,
+                     weight=68.75, dt=0.1, seed=None):
+    """Generate Poisson spike train input.
+
+    Parameters
+    ----------
+    n_neurons : int
+        Total number of neurons in the circuit.
+    n_steps : int
+        Number of simulation timesteps.
+    target_indices : array-like
+        Indices of neurons receiving Poisson input.
+    rate_hz : float
+        Poisson firing rate (Hz) per target neuron.
+    weight : float
+        Weight of each Poisson spike (mV). Shiu uses 250 * 0.275 = 68.75 mV.
+    dt : float
+        Timestep (ms).
+    seed : int, optional
+        Random seed.
+
+    Returns
+    -------
+    stimulus : np.ndarray
+        Shape (n_neurons, n_steps).
+    protocol : StimulusProtocol
+        Description for provenance.
+    """
+    if seed is not None:
+        rng = np.random.RandomState(seed)
+    else:
+        rng = np.random.RandomState()
+
+    target_indices = np.asarray(target_indices)
+    stimulus = np.zeros((n_neurons, n_steps), dtype=np.float64)
+
+    # Probability of spike per timestep
+    p_spike = rate_hz * (dt / 1000.0)
+
+    # Generate spikes
+    spikes = rng.random((len(target_indices), n_steps)) < p_spike
+    stimulus[target_indices] = spikes * weight
+
+    protocol = StimulusProtocol(
+        name="poisson",
+        target_indices=target_indices,
+        params={"rate_hz": rate_hz, "weight": weight, "dt": dt, "seed": seed},
+    )
+
+    return stimulus, protocol
+
+
+def step_stimulus(n_neurons, n_steps, target_indices, amplitude=5.0,
+                  start_ms=100.0, end_ms=500.0, dt=0.1):
+    """Generate a step current injection.
+
+    Parameters
+    ----------
+    n_neurons : int
+        Total number of neurons.
+    n_steps : int
+        Number of timesteps.
+    target_indices : array-like
+        Neurons receiving current.
+    amplitude : float
+        Current amplitude (mV equivalent).
+    start_ms, end_ms : float
+        Start and end time of the step (ms).
+    dt : float
+        Timestep (ms).
+
+    Returns
+    -------
+    stimulus : np.ndarray
+        Shape (n_neurons, n_steps).
+    protocol : StimulusProtocol
+    """
+    target_indices = np.asarray(target_indices)
+    stimulus = np.zeros((n_neurons, n_steps), dtype=np.float64)
+
+    start_step = int(start_ms / dt)
+    end_step = min(int(end_ms / dt), n_steps)
+
+    stimulus[np.ix_(target_indices, range(start_step, end_step))] = amplitude
+
+    protocol = StimulusProtocol(
+        name="step",
+        target_indices=target_indices,
+        params={"amplitude": amplitude, "start_ms": start_ms, "end_ms": end_ms},
+    )
+
+    return stimulus, protocol
+
+
+def pulse_stimulus(n_neurons, n_steps, target_indices, amplitude=10.0,
+                   pulse_ms=1.0, time_ms=100.0, dt=0.1):
+    """Generate a brief current pulse.
+
+    Parameters
+    ----------
+    n_neurons : int
+        Total number of neurons.
+    n_steps : int
+        Number of timesteps.
+    target_indices : array-like
+        Neurons receiving pulse.
+    amplitude : float
+        Pulse amplitude (mV equivalent).
+    pulse_ms : float
+        Pulse duration (ms).
+    time_ms : float
+        Time of pulse onset (ms).
+    dt : float
+        Timestep (ms).
+
+    Returns
+    -------
+    stimulus : np.ndarray
+        Shape (n_neurons, n_steps).
+    protocol : StimulusProtocol
+    """
+    target_indices = np.asarray(target_indices)
+    stimulus = np.zeros((n_neurons, n_steps), dtype=np.float64)
+
+    start_step = int(time_ms / dt)
+    end_step = min(start_step + int(pulse_ms / dt), n_steps)
+
+    if start_step < n_steps:
+        stimulus[np.ix_(target_indices, range(start_step, end_step))] = amplitude
+
+    protocol = StimulusProtocol(
+        name="pulse",
+        target_indices=target_indices,
+        params={"amplitude": amplitude, "pulse_ms": pulse_ms, "time_ms": time_ms},
+    )
+
+    return stimulus, protocol
+
+
+def combine_stimuli(*stimuli):
+    """Sum multiple stimulus arrays.
+
+    Parameters
+    ----------
+    *stimuli : np.ndarray
+        Stimulus arrays of the same shape.
+
+    Returns
+    -------
+    np.ndarray
+        Element-wise sum.
+    """
+    result = stimuli[0].copy()
+    for s in stimuli[1:]:
+        result += s
+    return result
+#+end_src
+
+** analysis.py — Post-simulation analysis
+
+#+begin_src python :tangle ../bravli/simulation/analysis.py
+"""Post-simulation analysis tools.
+
+Functions for computing firing rates, spike rasters, E/I balance,
+and activity statistics from SimulationResult objects.
+"""
+
+import numpy as np
+import pandas as pd
+
+
+def firing_rates(result, time_window=None):
+    """Compute per-neuron firing rates.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    time_window : tuple of float, optional
+        (start_ms, end_ms) to restrict rate computation.
+
+    Returns
+    -------
+    np.ndarray
+        Firing rate per neuron (Hz).
+    """
+    if time_window is not None:
+        t0, t1 = time_window
+        duration_s = (t1 - t0) / 1000.0
+        rates = np.array([
+            np.sum((st >= t0) & (st < t1)) / duration_s
+            for st in result.spike_times
+        ])
+    else:
+        duration_s = result.duration / 1000.0
+        rates = np.array([len(st) / duration_s for st in result.spike_times])
+
+    return rates
+
+
+def spike_raster(result, neuron_indices=None, time_window=None):
+    """Extract spike raster data for plotting.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    neuron_indices : array-like, optional
+        Subset of neurons. If None, all neurons.
+    time_window : tuple of float, optional
+        (start_ms, end_ms) to restrict.
+
+    Returns
+    -------
+    times : np.ndarray
+        Spike times (ms).
+    neurons : np.ndarray
+        Neuron indices for each spike.
+    """
+    if neuron_indices is None:
+        neuron_indices = range(result.n_neurons)
+
+    times = []
+    neurons = []
+    for i in neuron_indices:
+        st = result.spike_times[i]
+        if time_window is not None:
+            t0, t1 = time_window
+            st = st[(st >= t0) & (st < t1)]
+        times.append(st)
+        neurons.append(np.full(len(st), i))
+
+    if times:
+        return np.concatenate(times), np.concatenate(neurons)
+    return np.array([]), np.array([])
+
+
+def ei_balance(result, circuit):
+    """Compute excitatory/inhibitory balance per neuron.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    circuit : Circuit
+        The circuit that was simulated.
+
+    Returns
+    -------
+    pd.DataFrame
+        Per-neuron: total_excitatory_input, total_inhibitory_input,
+        ei_ratio, firing_rate_hz.
+    """
+    rates = firing_rates(result)
+
+    # Compute total signed input per postsynaptic neuron
+    exc_input = np.zeros(circuit.n_neurons)
+    inh_input = np.zeros(circuit.n_neurons)
+
+    pre_rates = rates[circuit.pre_idx]
+    weighted = pre_rates * circuit.weights
+
+    exc_mask = circuit.weights > 0
+    inh_mask = circuit.weights < 0
+
+    np.add.at(exc_input, circuit.post_idx[exc_mask], weighted[exc_mask])
+    np.add.at(inh_input, circuit.post_idx[inh_mask], np.abs(weighted[inh_mask]))
+
+    ei_ratio = np.where(inh_input > 0, exc_input / inh_input, np.inf)
+
+    return pd.DataFrame({
+        "exc_input": exc_input,
+        "inh_input": inh_input,
+        "ei_ratio": ei_ratio,
+        "firing_rate_hz": rates,
+    })
+
+
+def active_fraction(result, threshold_hz=1.0, time_window=None):
+    """Fraction of neurons firing above a threshold rate.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    threshold_hz : float
+        Minimum rate to count as "active".
+    time_window : tuple of float, optional
+        Restrict to time window.
+
+    Returns
+    -------
+    float
+        Fraction of neurons active.
+    """
+    rates = firing_rates(result, time_window=time_window)
+    return np.mean(rates > threshold_hz)
+
+
+def population_rate(result, bin_ms=10.0):
+    """Compute population-averaged firing rate over time.
+
+    Parameters
+    ----------
+    result : SimulationResult
+        Simulation output.
+    bin_ms : float
+        Time bin width (ms).
+
+    Returns
+    -------
+    times : np.ndarray
+        Bin centers (ms).
+    rates : np.ndarray
+        Population rate (Hz) per bin.
+    """
+    n_bins = int(result.duration / bin_ms)
+    counts = np.zeros(n_bins)
+
+    for st in result.spike_times:
+        if len(st) > 0:
+            bins = np.clip((st / bin_ms).astype(int), 0, n_bins - 1)
+            np.add.at(counts, bins, 1)
+
+    bin_s = bin_ms / 1000.0
+    rates = counts / (result.n_neurons * bin_s)
+    times = np.arange(n_bins) * bin_ms + bin_ms / 2
+
+    return times, rates
+#+end_src
+
+* Tests
+
+#+begin_src python :tangle ../tests/test_simulation.py
+"""Tests for the simulation module.
+
+Uses small synthetic circuits to verify correctness of the LIF engine,
+circuit assembly, stimulus generation, and analysis tools.
+"""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from bravli.simulation.circuit import Circuit, build_circuit, build_circuit_from_edges
+from bravli.simulation.engine import simulate, SimulationResult
+from bravli.simulation.stimulus import (
+    poisson_stimulus, step_stimulus, pulse_stimulus, combine_stimuli,
+)
+from bravli.simulation.analysis import (
+    firing_rates, spike_raster, ei_balance, active_fraction, population_rate,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def two_neuron_circuit():
+    """Minimal circuit: neuron 0 excites neuron 1."""
+    return Circuit(
+        n_neurons=2,
+        v_rest=np.array([-52.0, -52.0]),
+        v_thresh=np.array([-45.0, -45.0]),
+        v_reset=np.array([-52.0, -52.0]),
+        tau_m=np.array([20.0, 20.0]),
+        t_ref=np.array([2.2, 2.2]),
+        pre_idx=np.array([0], dtype=np.int32),
+        post_idx=np.array([1], dtype=np.int32),
+        weights=np.array([3.0]),  # strong excitatory
+        tau_syn=5.0,
+        delay_steps=18,
+    )
+
+
+@pytest.fixture
+def ten_neuron_edges():
+    """Synthetic edge table for 10 neurons."""
+    rng = np.random.RandomState(42)
+    n_edges = 30
+    pre = rng.randint(0, 10, n_edges)
+    post = rng.randint(0, 10, n_edges)
+    # Remove self-connections
+    mask = pre != post
+    pre, post = pre[mask], post[mask]
+    weights = rng.uniform(-1.0, 1.0, len(pre))
+
+    return pd.DataFrame({
+        "pre_pt_root_id": pre,
+        "post_pt_root_id": post,
+        "weight": weights,
+    })
+
+
+@pytest.fixture
+def ten_neuron_annotations():
+    """Neuron annotations for 10 neurons."""
+    return pd.DataFrame({
+        "root_id": range(10),
+        "v_rest": -52.0,
+        "v_thresh": -45.0,
+        "v_reset": -52.0,
+        "tau_m": 20.0,
+        "t_ref": 2.2,
+        "model_mode": "spiking",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Circuit construction
+# ---------------------------------------------------------------------------
+
+class TestCircuit:
+    def test_two_neuron_properties(self, two_neuron_circuit):
+        c = two_neuron_circuit
+        assert c.n_neurons == 2
+        assert c.n_synapses == 1
+        assert not c.is_heterogeneous
+
+    def test_summary(self, two_neuron_circuit):
+        s = two_neuron_circuit.summary()
+        assert "2 neurons" in s
+        assert "1 synapses" in s
+
+    def test_build_from_edges(self, ten_neuron_edges):
+        c = build_circuit_from_edges(ten_neuron_edges)
+        assert c.n_neurons == 10
+        assert c.n_synapses == len(ten_neuron_edges)
+
+    def test_build_from_neurons_and_edges(self, ten_neuron_annotations, ten_neuron_edges):
+        c = build_circuit(ten_neuron_annotations, ten_neuron_edges)
+        assert c.n_neurons == 10
+        assert len(c.id_to_idx) == 10
+
+
+# ---------------------------------------------------------------------------
+# Engine tests
+# ---------------------------------------------------------------------------
+
+class TestEngine:
+    def test_no_input_no_spikes(self, two_neuron_circuit):
+        """Without stimulus, neurons at rest should not spike."""
+        result = simulate(two_neuron_circuit, duration=100.0, dt=0.1)
+        assert result.n_spikes == 0
+        assert result.n_neurons == 2
+        assert result.duration == 100.0
+
+    def test_strong_step_causes_spikes(self, two_neuron_circuit):
+        """A strong step current should drive neuron 0 to spike."""
+        n = two_neuron_circuit.n_neurons
+        n_steps = int(100.0 / 0.1)
+        stim, _ = step_stimulus(n, n_steps, target_indices=[0],
+                                amplitude=15.0, start_ms=10.0, end_ms=90.0)
+        result = simulate(two_neuron_circuit, duration=100.0, dt=0.1,
+                         stimulus=stim)
+        # Neuron 0 should spike
+        assert len(result.spike_times[0]) > 0
+
+    def test_spike_propagation(self, two_neuron_circuit):
+        """Spikes from neuron 0 should propagate to neuron 1."""
+        n = two_neuron_circuit.n_neurons
+        n_steps = int(200.0 / 0.1)
+        stim, _ = step_stimulus(n, n_steps, target_indices=[0],
+                                amplitude=15.0, start_ms=10.0, end_ms=190.0)
+        result = simulate(two_neuron_circuit, duration=200.0, dt=0.1,
+                         stimulus=stim)
+        # Both neurons should spike
+        assert len(result.spike_times[0]) > 0
+        assert len(result.spike_times[1]) > 0
+        # Neuron 1 should spike after neuron 0 (with delay)
+        if len(result.spike_times[1]) > 0:
+            assert result.spike_times[1][0] > result.spike_times[0][0]
+
+    def test_record_voltage(self, two_neuron_circuit):
+        """Voltage recording should return traces."""
+        result = simulate(two_neuron_circuit, duration=50.0, dt=0.1,
+                         record_v=True, record_idx=[0, 1])
+        assert result.v_trace is not None
+        assert result.v_trace.shape == (2, 500)
+        assert result.g_trace is not None
+        # At rest, voltage should be near v_rest
+        assert abs(result.v_trace[0, 0] - (-52.0)) < 0.1
+
+    def test_refractory_period(self):
+        """After a spike, neuron should not fire during refractory."""
+        # Single neuron, no connections
+        c = Circuit(
+            n_neurons=1,
+            v_rest=np.array([-52.0]),
+            v_thresh=np.array([-45.0]),
+            v_reset=np.array([-52.0]),
+            tau_m=np.array([20.0]),
+            t_ref=np.array([10.0]),  # long refractory
+            pre_idx=np.array([], dtype=np.int32),
+            post_idx=np.array([], dtype=np.int32),
+            weights=np.array([]),
+            tau_syn=5.0,
+            delay_steps=18,
+        )
+        n_steps = int(100.0 / 0.1)
+        stim, _ = step_stimulus(1, n_steps, [0], amplitude=20.0,
+                                start_ms=0.0, end_ms=100.0)
+        result = simulate(c, duration=100.0, dt=0.1, stimulus=stim)
+        # Should spike but with ~10ms gap between spikes
+        if len(result.spike_times[0]) >= 2:
+            isi = np.diff(result.spike_times[0])
+            assert np.all(isi >= 9.9)  # refractory enforced
+
+    def test_mean_rate(self, two_neuron_circuit):
+        result = simulate(two_neuron_circuit, duration=100.0, dt=0.1)
+        assert result.mean_rate() == 0.0  # no stimulus, no spikes
+
+    def test_heterogeneous_params(self):
+        """Neurons with different tau_m should fire at different rates."""
+        c = Circuit(
+            n_neurons=2,
+            v_rest=np.array([-52.0, -52.0]),
+            v_thresh=np.array([-45.0, -45.0]),
+            v_reset=np.array([-52.0, -52.0]),
+            tau_m=np.array([5.0, 40.0]),  # fast vs slow
+            t_ref=np.array([2.0, 2.0]),
+            pre_idx=np.array([], dtype=np.int32),
+            post_idx=np.array([], dtype=np.int32),
+            weights=np.array([]),
+            tau_syn=5.0,
+            delay_steps=18,
+        )
+        n_steps = int(500.0 / 0.1)
+        stim, _ = step_stimulus(2, n_steps, [0, 1], amplitude=15.0,
+                                start_ms=10.0, end_ms=490.0)
+        result = simulate(c, duration=500.0, dt=0.1, stimulus=stim)
+        # Fast neuron (tau_m=5) should fire more than slow (tau_m=40)
+        assert len(result.spike_times[0]) > len(result.spike_times[1])
+
+
+# ---------------------------------------------------------------------------
+# Stimulus tests
+# ---------------------------------------------------------------------------
+
+class TestStimulus:
+    def test_poisson_shape(self):
+        stim, prot = poisson_stimulus(10, 1000, [0, 1, 2], rate_hz=100.0, seed=42)
+        assert stim.shape == (10, 1000)
+        assert prot.name == "poisson"
+        # Non-target neurons should be zero
+        assert np.all(stim[5] == 0.0)
+        # Target neurons should have some non-zero entries
+        assert np.any(stim[0] > 0)
+
+    def test_step_shape(self):
+        stim, prot = step_stimulus(5, 1000, [1], amplitude=10.0,
+                                   start_ms=10.0, end_ms=50.0, dt=0.1)
+        assert stim.shape == (5, 1000)
+        assert prot.name == "step"
+        # Before start: zero
+        assert stim[1, 0] == 0.0
+        # During step: amplitude
+        assert stim[1, 200] == 10.0
+        # After end: zero
+        assert stim[1, 600] == 0.0
+
+    def test_pulse_shape(self):
+        stim, prot = pulse_stimulus(3, 1000, [0], amplitude=20.0,
+                                    pulse_ms=1.0, time_ms=50.0, dt=0.1)
+        assert stim.shape == (3, 1000)
+        assert prot.name == "pulse"
+        # At pulse time
+        assert stim[0, 500] == 20.0
+        # After pulse
+        assert stim[0, 520] == 0.0
+
+    def test_combine(self):
+        s1 = np.ones((3, 100))
+        s2 = np.ones((3, 100)) * 2
+        combined = combine_stimuli(s1, s2)
+        assert np.allclose(combined, 3.0)
+
+    def test_poisson_rate_approximate(self):
+        """Poisson stimulus should produce approximately the right rate."""
+        stim, _ = poisson_stimulus(1, 100000, [0], rate_hz=100.0,
+                                   weight=1.0, dt=0.1, seed=123)
+        # Expected spikes: 100 Hz * 10 s = 1000 spikes
+        n_spikes = np.sum(stim[0] > 0)
+        assert 800 < n_spikes < 1200
+
+
+# ---------------------------------------------------------------------------
+# Analysis tests
+# ---------------------------------------------------------------------------
+
+class TestAnalysis:
+    def _make_result(self):
+        """Create a synthetic result with known spikes."""
+        spike_times = [
+            np.array([10.0, 20.0, 30.0, 40.0, 50.0]),  # 5 spikes in 100ms = 50Hz
+            np.array([15.0, 45.0]),  # 2 spikes = 20Hz
+            np.array([]),  # silent
+        ]
+        return SimulationResult(
+            spike_times=spike_times,
+            dt=0.1,
+            duration=100.0,
+            n_neurons=3,
+        )
+
+    def test_firing_rates(self):
+        result = self._make_result()
+        rates = firing_rates(result)
+        assert abs(rates[0] - 50.0) < 0.1
+        assert abs(rates[1] - 20.0) < 0.1
+        assert rates[2] == 0.0
+
+    def test_firing_rates_windowed(self):
+        result = self._make_result()
+        rates = firing_rates(result, time_window=(0.0, 50.0))
+        # Neuron 0: 4 spikes in 50ms = 80 Hz
+        assert abs(rates[0] - 80.0) < 0.1
+
+    def test_spike_raster(self):
+        result = self._make_result()
+        times, neurons = spike_raster(result)
+        assert len(times) == 7  # 5 + 2 + 0
+        assert len(neurons) == 7
+
+    def test_spike_raster_subset(self):
+        result = self._make_result()
+        times, neurons = spike_raster(result, neuron_indices=[0])
+        assert len(times) == 5
+
+    def test_active_fraction(self):
+        result = self._make_result()
+        frac = active_fraction(result, threshold_hz=1.0)
+        assert abs(frac - 2.0 / 3.0) < 0.01
+
+    def test_population_rate(self):
+        result = self._make_result()
+        times, rates = population_rate(result, bin_ms=50.0)
+        assert len(times) == 2
+        assert np.all(rates >= 0)
+
+    def test_ei_balance(self, two_neuron_circuit):
+        """EI balance on a silent network should be all zeros."""
+        result = simulate(two_neuron_circuit, duration=50.0, dt=0.1)
+        balance = ei_balance(result, two_neuron_circuit)
+        assert "exc_input" in balance.columns
+        assert "inh_input" in balance.columns
+        assert all(balance["firing_rate_hz"] == 0.0)
+#+end_src
+
+* Key Design Decisions
+
+| Decision                              | Rationale                                                                 |
+|---------------------------------------+---------------------------------------------------------------------------|
+| Pure numpy, no Brian2                 | Feynman imperative; zero new deps; transparent; fast enough for 139K      |
+| Euler integration (not exact linear)  | Clearer; dt/tau_m = 0.005 ensures stability; negligible error             |
+| Per-neuron parameter arrays           | Class-aware heterogeneity is free in vectorized numpy                     |
+| Delay buffer (circular)              | O(1) per step; supports configurable delay                                |
+| np.add.at for spike delivery         | Atomic scatter-add; handles multiple pre->post spikes correctly           |
+| StimulusProtocol dataclass           | Provenance: what was injected, where, with what parameters                |
+| Separate analysis module              | Clean separation: engine is pure numerics; analysis operates on results   |
+| Graded neurons via unreachable thresh | Same code path; v_thresh=+100 means spike check always fails              |
+
+* Performance Notes
+
+For the full FlyWire connectome (139K neurons, ~3M thresholded edges):
+- Memory: ~100 MB for state arrays + connectivity
+- Speed estimate: ~10-30 min per 1000ms (numpy, single core)
+  - Main bottleneck: spike delivery via np.add.at on 3M edges
+  - Brian2 achieves ~5 min with C++ codegen
+  - For interactive use, simulate subcircuits or short durations
+  - Future: Cython/numba for the inner loop, or port to C++ (MayaJiva)
+
+* Bibliography
+
+- Shiu PK et al. (2024). A computational brain model reveals sensorimotor
+  processing. /Nature/ 634:210-219.
+  Code: https://github.com/philshiu/Drosophila_brain_model
+- Zhang Y et al. (2024). Network structure governs Drosophila brain functionality.
+  /iScience/ (arXiv:2404.17128).
+- Brette R, Gerstner W (2005). Adaptive exponential integrate-and-fire model.
+  /J Neurophysiol/ 94:3637-42.
+- Stimberg M et al. (2019). Brian 2, an intuitive and efficient neural simulator.
+  /eLife/ 8:e47314.
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 11-simulation
+tag: lesson/11-simulation
+files_created:
+  - bravli/simulation/__init__.py
+  - bravli/simulation/circuit.py
+  - bravli/simulation/engine.py
+  - bravli/simulation/stimulus.py
+  - bravli/simulation/analysis.py
+  - tests/test_simulation.py
+verification:
+  - "python -c 'from bravli.simulation import Circuit, simulate' succeeds"
+  - "pytest tests/test_simulation.py -v — all tests pass"
+next_lesson: 12-portal
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

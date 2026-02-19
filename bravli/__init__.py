@@ -11,6 +11,7 @@ Subpackages:
     connectivity  Connectome edge list analysis and neuropil matrices
     physiology    Synapse models: NT-to-biophysics parameter database
     models        Point neuron models (LIF, graded) per cell type
+    simulation    Pure-numpy LIF simulation engine
     viz           3D visualization via navis
 """
 
