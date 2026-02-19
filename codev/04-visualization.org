@@ -1,0 +1,912 @@
+#+title: Lesson 04 — Visualization
+#+subtitle: Making the invisible visible: navis wrappers for 3D brain rendering
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Science without visualization is navigation without a map.  Every preceding
+lesson constructed a mental model of the fly brain through /data/: hierarchies,
+counts, factsheets.  But the brain is a three-dimensional object — 78 neuropils
+packed into a volume smaller than a sesame seed.  To /see/ the structures we
+measure is not merely aesthetic; it is epistemic.  A cell-type distribution
+table can hide spatial gradients that jump out of a 3D render in a second.
+
+The MayaPortal philosophy — "the observing eye" — holds that observation is the
+first and most fundamental act of science.  For now, navis is our eye: a mature
+Python library that can render neuropil meshes, neuron skeletons, and annotated
+connectivity in interactive 3D, using plotly in notebooks or octarine/vispy in
+the terminal.  Later, MayaPortal's custom WebGPU renderer will replace it —
+but the /interface/ we build here will survive that transition because we wrap
+navis behind bravli-specific functions that speak the language of our domain:
+neuropils, cell types, hemispheres — not vertices, faces, backends.
+
+** Learning Objectives
+   - [ ] Understand the role of visualization in exploratory neuroscience
+   - [ ] Know how navis represents meshes (Volume), neurons (MeshNeuron), and
+         renders them (plot3d)
+   - [ ] Use ~show_neuropil~ to render one or more neuropil meshes
+   - [ ] Use ~show_neurons~ to render neuron meshes by type or ID
+   - [ ] Use ~show_neuropil_connectivity~ to overlay connectivity as colored
+         edges between neuropil centroids
+   - [ ] Understand why we wrap navis rather than using it directly
+
+** File Map
+   | File                  | Role                                | Tangled from |
+   |-----------------------+-------------------------------------+--------------|
+   | bravli/viz/__init__.py | Package exports                    | this file    |
+   | bravli/viz/viz.py      | show_neuropil, show_neurons, etc.  | this file    |
+   | tests/test_viz.py      | Smoke tests (render without crash) | this file    |
+
+* Architecture
+
+The visualization module sits at the top of the bravli stack — it consumes
+parcellation, composition, and factology objects and produces visual output.
+
+#+begin_example
+                   ┌──────────────┐
+                   │  Lesson 05   │
+                   │  Integration │
+                   └──────┬───────┘
+                          │ uses
+              ┌───────────┼───────────┐
+              │           │           │
+       ┌──────▼──┐ ┌──────▼──┐ ┌─────▼────┐
+       │  viz    │ │factology│ │composit° │
+       └────┬────┘ └─────────┘ └──────────┘
+            │ wraps
+       ┌────▼────┐
+       │  navis  │   (external: plot3d, Volume, MeshNeuron)
+       └─────────┘
+#+end_example
+
+Our wrappers do three things:
+
+1. *Translate domain → navis*.  The user says "show me the mushroom body";
+   we look up the neuropil in the parcellation, create a navis.Volume from
+   its mesh data, and call plot3d.
+
+2. *Provide sensible defaults*.  Colors keyed to neurotransmitter type.
+   Alpha for overlapping structures.  Title annotations.
+
+3. *Return, don't consume*.  Every function returns the plotly figure (or
+   navis viewer handle) so the caller can compose, annotate, or save.
+
+* Implementation
+
+** bravli/viz/__init__.py
+
+The public API: three rendering functions plus a color utility.
+
+#+begin_src python :tangle ../bravli/viz/__init__.py
+"""Visualization: navis wrappers for 3D fly brain rendering."""
+
+from bravli.viz.viz import (
+    show_neuropil,
+    show_neurons,
+    show_neuropil_connectivity,
+    NT_COLORS,
+    SUPERCLASS_COLORS,
+)
+#+end_src
+
+** bravli/viz/viz.py — the rendering functions
+
+The module is structured around three public functions, each targeting a
+different visualization need:
+
+- ~show_neuropil~: render neuropil meshes as translucent volumes
+- ~show_neurons~: render individual neuron meshes, colored by property
+- ~show_neuropil_connectivity~: overlay connectivity as edges between neuropils
+
+All functions follow the same pattern: accept bravli domain objects, translate
+to navis primitives, call plot3d, return the figure.
+
+#+begin_src python :tangle ../bravli/viz/viz.py
+"""Visualization wrappers around navis for 3D fly brain rendering.
+
+Heritage: this module replaces the BBP visualization stack (VoxelData +
+Blender/ParaView + custom OpenGL) with navis, which handles meshes,
+skeletons, and interactive 3D natively.  The wrapper functions speak
+bravli's domain language — neuropils, cell types, neurotransmitters —
+so that downstream code (Lesson 05+) never touches navis directly.
+
+Design principle: every function *returns* the figure/viewer handle.
+Nothing is displayed implicitly — the caller decides when and how to show.
+"""
+
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+import numpy as np
+import pandas as pd
+
+from bravli.utils import get_logger
+
+LOG = get_logger("viz")
+
+# Try importing navis — fail gracefully so the rest of bravli works
+# even without visualization dependencies installed.
+try:
+    import navis
+    import navis.plotting  # ensure plotting submodule loaded
+    HAS_NAVIS = True
+except ImportError:
+    HAS_NAVIS = False
+    LOG.warning("navis not installed — visualization functions will raise ImportError")
+
+# Try importing plotly for figure composition and static export
+try:
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
+
+
+def _require_navis():
+    """Guard: raise ImportError with a helpful message if navis is missing."""
+    if not HAS_NAVIS:
+        raise ImportError(
+            "navis is required for visualization. "
+            "Install it with: pip install 'bravli[viz]'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Color palettes — domain-meaningful defaults
+# ---------------------------------------------------------------------------
+
+NT_COLORS: Dict[str, str] = {
+    "acetylcholine": "#2196F3",   # blue
+    "gaba":          "#F44336",   # red
+    "glutamate":     "#4CAF50",   # green
+    "dopamine":      "#FF9800",   # orange
+    "serotonin":     "#9C27B0",   # purple
+    "octopamine":    "#00BCD4",   # cyan
+    "tyramine":      "#795548",   # brown
+    "unknown":       "#9E9E9E",   # grey
+}
+"""Colors for neurotransmitter types, chosen for perceptual distinctness."""
+
+SUPERCLASS_COLORS: Dict[str, str] = {
+    "central":             "#3F51B5",   # indigo
+    "optic":               "#8BC34A",   # light green
+    "sensory":             "#FF5722",   # deep orange
+    "ascending":           "#009688",   # teal
+    "descending":          "#E91E63",   # pink
+    "motor":               "#FFC107",   # amber
+    "endocrine":           "#607D8B",   # blue grey
+    "visual_projection":   "#CDDC39",   # lime
+    "visual_centrifugal":  "#00E676",   # green accent
+}
+"""Colors for FlyWire super_class categories."""
+
+DEFAULT_NEUROPIL_COLOR = (0.75, 0.75, 0.85, 0.25)
+"""Default RGBA for neuropil volumes: translucent blue-grey."""
+
+
+# ---------------------------------------------------------------------------
+# show_neuropil — render neuropil meshes
+# ---------------------------------------------------------------------------
+
+def show_neuropil(
+    meshes: Union[Dict[str, Any], List[Any]],
+    names: Optional[List[str]] = None,
+    colors: Optional[Union[Dict[str, str], str, list]] = None,
+    alpha: float = 0.25,
+    title: Optional[str] = None,
+    backend: str = "plotly",
+    **kwargs,
+):
+    """Render one or more neuropil meshes as translucent 3D volumes.
+
+    Parameters
+    ----------
+    meshes : dict or list
+        If dict: {neuropil_name: mesh_data} where mesh_data is either
+        a navis.Volume, a trimesh.Trimesh, or a (vertices, faces) tuple.
+        If list: list of mesh objects (paired with `names`).
+    names : list of str, optional
+        Names for list-mode meshes. Ignored if meshes is a dict.
+    colors : dict or str or list, optional
+        Colors per neuropil name (dict), a single color (str), or a
+        list of colors matching the meshes.  Defaults to blue-grey.
+    alpha : float
+        Transparency (0 = invisible, 1 = opaque).
+    title : str, optional
+        Title for the plot.
+    backend : str
+        Navis plotting backend: "plotly" (default), "vispy", "octarine".
+    **kwargs
+        Passed through to navis.plot3d.
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure or navis viewer
+        The rendered figure.
+    """
+    _require_navis()
+
+    # Normalize to list of (name, mesh) pairs
+    if isinstance(meshes, dict):
+        pairs = list(meshes.items())
+    else:
+        if names is None:
+            names = [f"neuropil_{i}" for i in range(len(meshes))]
+        pairs = list(zip(names, meshes))
+
+    # Convert each mesh to navis.Volume
+    volumes = []
+    for name, mesh_data in pairs:
+        vol = _to_volume(mesh_data, name=name, alpha=alpha)
+
+        # Assign color
+        if isinstance(colors, dict):
+            col = colors.get(name, DEFAULT_NEUROPIL_COLOR)
+        elif isinstance(colors, list):
+            idx = [n for n, _ in pairs].index(name)
+            col = colors[idx] if idx < len(colors) else DEFAULT_NEUROPIL_COLOR
+        elif colors is not None:
+            col = colors
+        else:
+            col = DEFAULT_NEUROPIL_COLOR
+
+        vol.color = col
+        volumes.append(vol)
+
+    LOG.info("Rendering %d neuropil volumes", len(volumes))
+    fig = navis.plot3d(volumes, backend=backend, **kwargs)
+
+    if title and HAS_PLOTLY and isinstance(fig, go.Figure):
+        fig.update_layout(title=title)
+
+    return fig
+
+
+def _to_volume(mesh_data, name="volume", alpha=0.25):
+    """Convert various mesh representations to navis.Volume.
+
+    Accepts:
+    - navis.Volume (returned as-is)
+    - trimesh.Trimesh (wrapped)
+    - (vertices, faces) tuple
+    - dict with 'vertices' and 'faces' keys
+    """
+    if isinstance(mesh_data, navis.Volume):
+        return mesh_data
+
+    if hasattr(mesh_data, 'vertices') and hasattr(mesh_data, 'faces'):
+        return navis.Volume(
+            vertices=np.asarray(mesh_data.vertices),
+            faces=np.asarray(mesh_data.faces),
+            name=name,
+            color=(*DEFAULT_NEUROPIL_COLOR[:3], alpha),
+        )
+
+    if isinstance(mesh_data, tuple) and len(mesh_data) == 2:
+        vertices, faces = mesh_data
+        return navis.Volume(
+            vertices=np.asarray(vertices),
+            faces=np.asarray(faces),
+            name=name,
+            color=(*DEFAULT_NEUROPIL_COLOR[:3], alpha),
+        )
+
+    if isinstance(mesh_data, dict) and 'vertices' in mesh_data:
+        return navis.Volume(
+            vertices=np.asarray(mesh_data['vertices']),
+            faces=np.asarray(mesh_data['faces']),
+            name=name,
+            color=(*DEFAULT_NEUROPIL_COLOR[:3], alpha),
+        )
+
+    raise TypeError(
+        f"Cannot convert {type(mesh_data)} to navis.Volume. "
+        "Expected Volume, trimesh, (vertices, faces) tuple, or dict."
+    )
+
+
+# ---------------------------------------------------------------------------
+# show_neurons — render neuron meshes colored by property
+# ---------------------------------------------------------------------------
+
+def show_neurons(
+    neurons: Union[Any, List[Any]],
+    color_by: Optional[str] = None,
+    annotations: Optional[pd.DataFrame] = None,
+    palette: Optional[Dict[str, str]] = None,
+    title: Optional[str] = None,
+    backend: str = "plotly",
+    **kwargs,
+):
+    """Render neuron meshes, optionally colored by a property.
+
+    Parameters
+    ----------
+    neurons : navis.NeuronList or list of navis neurons
+        The neurons to render.
+    color_by : str, optional
+        Column in `annotations` to use for coloring. Common choices:
+        "top_nt" (neurotransmitter), "super_class", "cell_type".
+        If None, navis default coloring is used.
+    annotations : pd.DataFrame, optional
+        Annotation table indexed or containing 'root_id'. Required if
+        `color_by` is specified.
+    palette : dict, optional
+        {value: color} mapping. Defaults to NT_COLORS or SUPERCLASS_COLORS
+        depending on color_by.
+    title : str, optional
+        Title for the plot.
+    backend : str
+        Navis plotting backend.
+    **kwargs
+        Passed through to navis.plot3d.
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure or navis viewer
+    """
+    _require_navis()
+
+    # Ensure we have a NeuronList
+    if isinstance(neurons, (list, tuple)):
+        neuron_list = navis.NeuronList(neurons)
+    elif isinstance(neurons, navis.NeuronList):
+        neuron_list = neurons
+    else:
+        neuron_list = navis.NeuronList([neurons])
+
+    # Build color mapping if requested
+    color_kwarg = {}
+    if color_by is not None and annotations is not None:
+        if palette is None:
+            palette = _default_palette(color_by)
+        color_map = _build_color_map(neuron_list, annotations, color_by, palette)
+        if color_map:
+            color_kwarg["color"] = color_map
+
+    LOG.info("Rendering %d neurons", len(neuron_list))
+    fig = navis.plot3d(neuron_list, backend=backend, **color_kwarg, **kwargs)
+
+    if title and HAS_PLOTLY and isinstance(fig, go.Figure):
+        fig.update_layout(title=title)
+
+    return fig
+
+
+def _default_palette(color_by):
+    """Return the default palette for a given color_by column."""
+    if color_by == "top_nt":
+        return NT_COLORS
+    if color_by == "super_class":
+        return SUPERCLASS_COLORS
+    return {}
+
+
+def _build_color_map(neuron_list, annotations, color_by, palette):
+    """Build a {neuron_id: color} dict from annotations and palette."""
+    color_map = {}
+    for neuron in neuron_list:
+        nid = neuron.id
+        # Look up the annotation row for this neuron
+        if "root_id" in annotations.columns:
+            row = annotations[annotations["root_id"] == nid]
+        elif annotations.index.name == "root_id":
+            row = annotations.loc[[nid]] if nid in annotations.index else pd.DataFrame()
+        else:
+            continue
+
+        if len(row) == 0:
+            continue
+
+        value = row.iloc[0].get(color_by, None)
+        if value is not None and value in palette:
+            color_map[nid] = palette[value]
+
+    return color_map
+
+
+# ---------------------------------------------------------------------------
+# show_neuropil_connectivity — overlay connectivity edges
+# ---------------------------------------------------------------------------
+
+def show_neuropil_connectivity(
+    centroids: Dict[str, np.ndarray],
+    weights: pd.DataFrame,
+    meshes: Optional[Dict[str, Any]] = None,
+    top_n: int = 20,
+    min_weight: float = 0.0,
+    edge_color: str = "#FF5722",
+    title: Optional[str] = None,
+    backend: str = "plotly",
+    **kwargs,
+):
+    """Visualize neuropil-to-neuropil connectivity as 3D edges.
+
+    Draws lines between neuropil centroids, with line width proportional
+    to connection weight.  Optionally renders neuropil meshes underneath.
+
+    Parameters
+    ----------
+    centroids : dict
+        {neuropil_name: np.array([x, y, z])} centroid coordinates.
+    weights : pd.DataFrame
+        Connectivity matrix (neuropils × neuropils). Values are synapse
+        counts or connection strengths.
+    meshes : dict, optional
+        {neuropil_name: mesh_data} for background neuropil rendering.
+    top_n : int
+        Only draw the top N strongest connections.
+    min_weight : float
+        Minimum weight threshold for drawing an edge.
+    edge_color : str
+        Color for connectivity edges.
+    title : str, optional
+        Title for the plot.
+    backend : str
+        Plotting backend (only "plotly" fully supports edge overlays).
+    **kwargs
+        Additional keyword arguments.
+
+    Returns
+    -------
+    fig : plotly.graph_objects.Figure
+    """
+    if not HAS_PLOTLY:
+        raise ImportError(
+            "plotly is required for connectivity visualization. "
+            "Install it with: pip install plotly"
+        )
+    _require_navis()
+
+    fig = go.Figure()
+
+    # Render background meshes if provided
+    if meshes is not None:
+        for name, mesh_data in meshes.items():
+            vol = _to_volume(mesh_data, name=name, alpha=0.1)
+            verts = np.asarray(vol.vertices)
+            faces_arr = np.asarray(vol.faces)
+            fig.add_trace(go.Mesh3d(
+                x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+                i=faces_arr[:, 0], j=faces_arr[:, 1], k=faces_arr[:, 2],
+                opacity=0.1,
+                name=name,
+                hoverinfo="name",
+            ))
+
+    # Extract edges from the weight matrix
+    edges = []
+    for src in weights.index:
+        for tgt in weights.columns:
+            w = weights.loc[src, tgt]
+            if w > min_weight and src in centroids and tgt in centroids:
+                edges.append((src, tgt, w))
+
+    # Sort by weight and keep top N
+    edges.sort(key=lambda e: e[2], reverse=True)
+    edges = edges[:top_n]
+
+    if not edges:
+        LOG.warning("No edges to draw (all below threshold or missing centroids)")
+    else:
+        # Normalize weights for line width scaling
+        max_w = max(e[2] for e in edges)
+        min_w = min(e[2] for e in edges)
+        w_range = max_w - min_w if max_w != min_w else 1.0
+
+        for src, tgt, w in edges:
+            p0 = centroids[src]
+            p1 = centroids[tgt]
+            width = 1 + 9 * (w - min_w) / w_range  # scale 1–10
+            fig.add_trace(go.Scatter3d(
+                x=[p0[0], p1[0]],
+                y=[p0[1], p1[1]],
+                z=[p0[2], p1[2]],
+                mode="lines",
+                line=dict(color=edge_color, width=width),
+                name=f"{src}→{tgt} ({w:.0f})",
+                hoverinfo="name",
+            ))
+
+    # Add centroid markers
+    labeled = set()
+    for src, tgt, _ in edges:
+        labeled.add(src)
+        labeled.add(tgt)
+
+    if labeled:
+        pts = np.array([centroids[n] for n in labeled])
+        fig.add_trace(go.Scatter3d(
+            x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
+            mode="markers+text",
+            marker=dict(size=4, color="#212121"),
+            text=list(labeled),
+            textposition="top center",
+            textfont=dict(size=8),
+            name="neuropils",
+            hoverinfo="text",
+        ))
+
+    fig.update_layout(
+        title=title or "Neuropil connectivity",
+        scene=dict(
+            xaxis_title="X",
+            yaxis_title="Y",
+            zaxis_title="Z",
+        ),
+        showlegend=True,
+    )
+
+    LOG.info("Rendered %d connectivity edges", len(edges))
+    return fig
+#+end_src
+
+A few design notes on what we /did not/ do:
+
+- *No implicit display*.  Every function returns the figure.  In a notebook
+  you call ~fig.show()~; in a script you call ~fig.write_html("out.html")~.
+  This keeps the library side-effect-free.
+
+- *Plotly for connectivity*.  The ~show_neuropil_connectivity~ function uses
+  plotly directly rather than navis.plot3d because navis has no built-in
+  edge overlay.  This is the right trade-off: navis excels at meshes and
+  neurons; plotly excels at arbitrary 3D annotations.
+
+- *Graceful degradation*.  If navis or plotly aren't installed, the module
+  imports without crashing.  Functions raise helpful ImportErrors only when
+  called.
+
+** tests/test_viz.py — smoke tests
+
+Visualization tests are inherently tricky: we can't easily assert pixel-level
+correctness.  Instead we write /smoke tests/ that verify:
+1. Functions run without raising exceptions
+2. Return types are correct
+3. Edge cases (empty inputs) are handled gracefully
+
+We create minimal synthetic meshes — a tetrahedron is the simplest valid mesh —
+and verify that the rendering pipeline doesn't crash.  Tests that require navis
+are skipped if it's not installed.
+
+#+begin_src python :tangle ../tests/test_viz.py
+"""Smoke tests for bravli.viz.
+
+These tests verify that visualization functions execute without error
+and return expected types.  They do NOT verify visual correctness.
+All tests use synthetic data (tiny tetrahedra) — no FlyWire data needed.
+"""
+
+import pytest
+import numpy as np
+import pandas as pd
+
+# Skip entire module if navis is not available
+navis = pytest.importorskip("navis")
+plotly = pytest.importorskip("plotly")
+
+from bravli.viz import (
+    show_neuropil,
+    show_neurons,
+    show_neuropil_connectivity,
+    NT_COLORS,
+    SUPERCLASS_COLORS,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: minimal synthetic meshes
+# ---------------------------------------------------------------------------
+
+def _tetrahedron(offset=(0, 0, 0)):
+    """Return (vertices, faces) for a unit tetrahedron at offset."""
+    ox, oy, oz = offset
+    vertices = np.array([
+        [ox + 0.0, oy + 0.0, oz + 0.0],
+        [ox + 1.0, oy + 0.0, oz + 0.0],
+        [ox + 0.5, oy + 1.0, oz + 0.0],
+        [ox + 0.5, oy + 0.5, oz + 1.0],
+    ], dtype=float)
+    faces = np.array([
+        [0, 1, 2],
+        [0, 1, 3],
+        [0, 2, 3],
+        [1, 2, 3],
+    ], dtype=int)
+    return vertices, faces
+
+
+@pytest.fixture
+def single_mesh():
+    """A single tetrahedron mesh as (vertices, faces)."""
+    return _tetrahedron()
+
+
+@pytest.fixture
+def mesh_dict():
+    """Two named meshes as a dict."""
+    return {
+        "neuropil_A": _tetrahedron((0, 0, 0)),
+        "neuropil_B": _tetrahedron((3, 0, 0)),
+    }
+
+
+@pytest.fixture
+def sample_neuron():
+    """A navis MeshNeuron from a tetrahedron."""
+    verts, faces = _tetrahedron()
+    return navis.MeshNeuron((verts, faces), id=42, name="test_neuron")
+
+
+@pytest.fixture
+def sample_annotations():
+    """Minimal annotation DataFrame matching sample neurons."""
+    return pd.DataFrame({
+        "root_id": [42, 43],
+        "top_nt": ["acetylcholine", "gaba"],
+        "super_class": ["central", "optic"],
+        "cell_type": ["KC", "Mi1"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Tests: show_neuropil
+# ---------------------------------------------------------------------------
+
+class TestShowNeuropil:
+
+    def test_single_mesh_tuple(self, single_mesh):
+        """Render a single (vertices, faces) tuple."""
+        fig = show_neuropil(
+            meshes=[single_mesh],
+            names=["test"],
+            backend="plotly",
+        )
+        assert fig is not None
+
+    def test_mesh_dict(self, mesh_dict):
+        """Render meshes from a name→mesh dict."""
+        fig = show_neuropil(
+            meshes=mesh_dict,
+            backend="plotly",
+        )
+        assert fig is not None
+
+    def test_with_colors(self, mesh_dict):
+        """Render with custom colors per neuropil."""
+        fig = show_neuropil(
+            meshes=mesh_dict,
+            colors={"neuropil_A": "red", "neuropil_B": "blue"},
+            backend="plotly",
+        )
+        assert fig is not None
+
+    def test_with_title(self, single_mesh):
+        """Render with a title annotation."""
+        fig = show_neuropil(
+            meshes=[single_mesh],
+            names=["test"],
+            title="Test Neuropil",
+            backend="plotly",
+        )
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+        assert fig.layout.title.text == "Test Neuropil"
+
+    def test_navis_volume_input(self):
+        """Accept a pre-built navis.Volume."""
+        verts, faces = _tetrahedron()
+        vol = navis.Volume(verts, faces, name="pre_built")
+        fig = show_neuropil(
+            meshes={"pre_built": vol},
+            backend="plotly",
+        )
+        assert fig is not None
+
+    def test_empty_mesh_list(self):
+        """Empty mesh list renders without error."""
+        fig = show_neuropil(meshes={}, backend="plotly")
+        assert fig is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: show_neurons
+# ---------------------------------------------------------------------------
+
+class TestShowNeurons:
+
+    def test_single_neuron(self, sample_neuron):
+        """Render a single MeshNeuron."""
+        fig = show_neurons(
+            neurons=sample_neuron,
+            backend="plotly",
+        )
+        assert fig is not None
+
+    def test_neuron_list(self, sample_neuron):
+        """Render a NeuronList."""
+        nl = navis.NeuronList([sample_neuron])
+        fig = show_neurons(neurons=nl, backend="plotly")
+        assert fig is not None
+
+    def test_color_by_nt(self, sample_neuron, sample_annotations):
+        """Color neurons by neurotransmitter type."""
+        fig = show_neurons(
+            neurons=sample_neuron,
+            color_by="top_nt",
+            annotations=sample_annotations,
+            backend="plotly",
+        )
+        assert fig is not None
+
+
+# ---------------------------------------------------------------------------
+# Tests: show_neuropil_connectivity
+# ---------------------------------------------------------------------------
+
+class TestShowNeuropilConnectivity:
+
+    def test_basic_connectivity(self):
+        """Render simple 2-neuropil connectivity."""
+        centroids = {
+            "A": np.array([0.0, 0.0, 0.0]),
+            "B": np.array([5.0, 0.0, 0.0]),
+        }
+        weights = pd.DataFrame(
+            [[0, 100], [50, 0]],
+            index=["A", "B"],
+            columns=["A", "B"],
+        )
+        fig = show_neuropil_connectivity(
+            centroids=centroids,
+            weights=weights,
+        )
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+        # Should have at least edge traces + centroid markers
+        assert len(fig.data) >= 2
+
+    def test_with_background_meshes(self, mesh_dict):
+        """Render connectivity with background neuropil meshes."""
+        centroids = {
+            "neuropil_A": np.array([0.5, 0.5, 0.25]),
+            "neuropil_B": np.array([3.5, 0.5, 0.25]),
+        }
+        weights = pd.DataFrame(
+            [[0, 200], [150, 0]],
+            index=["neuropil_A", "neuropil_B"],
+            columns=["neuropil_A", "neuropil_B"],
+        )
+        fig = show_neuropil_connectivity(
+            centroids=centroids,
+            weights=weights,
+            meshes=mesh_dict,
+        )
+        assert fig is not None
+
+    def test_empty_connectivity(self):
+        """No edges when all weights are zero."""
+        centroids = {
+            "A": np.array([0.0, 0.0, 0.0]),
+            "B": np.array([5.0, 0.0, 0.0]),
+        }
+        weights = pd.DataFrame(
+            [[0, 0], [0, 0]],
+            index=["A", "B"],
+            columns=["A", "B"],
+        )
+        fig = show_neuropil_connectivity(
+            centroids=centroids,
+            weights=weights,
+        )
+        assert fig is not None
+
+    def test_top_n_filtering(self):
+        """Only top_n edges are drawn."""
+        centroids = {n: np.array([i * 2.0, 0, 0]) for i, n in enumerate("ABCD")}
+        data = np.array([
+            [0, 10, 20, 30],
+            [10, 0, 5, 15],
+            [20, 5, 0, 25],
+            [30, 15, 25, 0],
+        ])
+        weights = pd.DataFrame(data, index=list("ABCD"), columns=list("ABCD"))
+        fig = show_neuropil_connectivity(
+            centroids=centroids,
+            weights=weights,
+            top_n=3,
+        )
+        # Count line traces (each edge = one Scatter3d with mode="lines")
+        line_traces = [t for t in fig.data if hasattr(t, 'mode') and t.mode == "lines"]
+        assert len(line_traces) == 3
+
+
+# ---------------------------------------------------------------------------
+# Tests: color palettes
+# ---------------------------------------------------------------------------
+
+class TestColorPalettes:
+
+    def test_nt_colors_has_common_types(self):
+        """NT palette covers the main neurotransmitters."""
+        for nt in ["acetylcholine", "gaba", "glutamate", "dopamine"]:
+            assert nt in NT_COLORS
+
+    def test_superclass_colors_has_common_types(self):
+        """Super-class palette covers common FlyWire classes."""
+        for sc in ["central", "optic", "sensory", "motor"]:
+            assert sc in SUPERCLASS_COLORS
+#+end_src
+
+* Key Design Decisions
+  | Decision                               | Rationale                                                    |
+  |----------------------------------------+--------------------------------------------------------------|
+  | Wrap navis rather than expose it       | Downstream code speaks domain language; backend can change   |
+  | Return figures, never display          | Side-effect-free; caller controls when/how to show           |
+  | Plotly as default backend              | Works in Jupyter, CLI (opens browser), and headless (HTML)   |
+  | Separate function for connectivity     | Connectivity overlays need plotly directly; navis can't do it|
+  | Graceful import with HAS_NAVIS guard   | Package usable for non-viz workflows without navis installed |
+  | Domain-keyed color palettes            | NT and super_class colors meaningful; not arbitrary rainbow  |
+  | Tetrahedron smoke tests                | Minimal valid mesh; no external data; fast execution         |
+
+* Testing
+
+Run the visualization tests:
+
+#+begin_example
+cd /path/to/bravli
+make test
+# or specifically:
+pytest tests/test_viz.py -v
+#+end_example
+
+Tests are /smoke tests/ — they verify execution without crash, not pixel
+correctness.  Manual visual inspection in a notebook is the appropriate
+complement:
+
+#+begin_example python
+from bravli.viz import show_neuropil
+# Create a tetrahedron for quick check
+import numpy as np
+verts = np.array([[0,0,0],[1,0,0],[0.5,1,0],[0.5,0.5,1.0]])
+faces = np.array([[0,1,2],[0,1,3],[0,2,3],[1,2,3]])
+fig = show_neuropil({"demo": (verts, faces)}, backend="plotly")
+fig.show()
+#+end_example
+
+* Exercises for the Reader
+
+1. *Custom coloring*: write a helper that assigns colors based on a
+   continuous variable (e.g., neuron count) using a matplotlib colormap,
+   and pass it to ~show_neuropil~.
+
+2. *Side-by-side comparison*: use plotly subplots to render two neuropils
+   side by side, each with different cell-type colorings.
+
+3. *Export pipeline*: write a function that, given a parcellation and
+   factsheet, renders the top-5 neuropils by neuron count and saves them
+   as a multi-page HTML report.
+
+4. *MayaPortal preview*: sketch the API changes needed to swap the navis
+   backend for a WebGPU renderer.  What stays the same?  What changes?
+
+* Requirements for Agents                                        :noexport:
+  #+begin_src yaml :tangle no
+  lesson: 04-visualization
+  files_created:
+    - bravli/viz/__init__.py
+    - bravli/viz/viz.py
+    - tests/test_viz.py
+  dependencies:
+    - navis >= 1.0
+    - plotly >= 5.0
+  verification:
+    - pytest tests/test_viz.py -v   # all smoke tests pass
+    - python -c "from bravli.viz import show_neuropil"
+  next_lesson: 05-explore-mushroom-body
+  #+end_src
+
+* Local Variables                                                :noexport:
+  # Local Variables:
+  # org-confirm-babel-evaluate: nil
+  # End:

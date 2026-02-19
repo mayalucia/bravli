@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Data (large files, downloaded separately)
+data/flywire_annotations/*.tsv
+data/flywire_annotations/*.csv
+data/zenodo/
+data/cache/
+
+# Generated output (HTML visualizations, often 10-30 MB each)
+output/*.html
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,618 @@
+#+title: Lesson 03 — Factology
+#+subtitle: Structured scientific measurements: every number earns a name
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Science produces numbers. A neuron count. A proportion. A connectivity score. These
+numbers are useless without context: what was measured, in what units, why it matters,
+and how it was obtained. A bare =42= in a notebook cell means nothing. A =Fact= with
+label ="neuron_count"=, name ="Total neurons in mushroom body"=, unit ="neurons"=, and
+value =42= means everything.
+
+The Factology pattern, inherited from the =circuit-factology= library at BBP, makes
+this discipline automatic. Every measurement method is decorated with =@fact(name, unit)=,
+which wraps its return value in a =Fact= namedtuple carrying the label, name,
+description (from the docstring), unit, and value. A =Factology= is a collection of
+such methods — a structured factsheet for a subject (a brain region, a cell type, a
+circuit).
+
+The power of this pattern emerges at scale. When you have 78 neuropils and want a
+factsheet for each, the Factology ABC ensures every neuropil gets the same set of
+measurements, in the same format, with the same metadata. This is what makes
+comparison possible — not just between neuropils, but across time (did the factsheet
+change after a data update?) and across brains (how does the fly compare to the mouse?).
+
+The second pattern, =@interface=, is subtler. It declares a method as part of the
+class's contract without implementing it. If the method is not overridden, the
+decorator tries to find it on a helper object (=self._helper=). This two-level
+delegation lets the same Factology class work with different data backends — FlyWire
+today, a future dataset tomorrow — by swapping the helper.
+
+** Learning Objectives
+
+- [ ] Understand the =Fact= namedtuple and why it matters
+- [ ] Use =@fact(name, unit)= to wrap measurement methods
+- [ ] Use =@structural= / =@connectomic= to register and cache facts
+- [ ] Implement a =NeuropilFacts= class that produces a structured factsheet
+- [ ] Understand the =@interface= delegation pattern
+
+** File Map
+
+| File                              | Role                                    |
+|-----------------------------------+-----------------------------------------|
+| =bravli/factology/__init__.py=   | Subpackage exports                      |
+| =bravli/factology/fact.py=       | Fact namedtuple + decorators            |
+| =bravli/factology/factology.py=  | Factology ABC + NeuropilFacts           |
+| =tests/test_factology.py=        | Factsheet creation and collection       |
+
+* Architecture
+
+#+begin_example
+  ┌─────────────────────────────────────────────────┐
+  │  NeuropilFacts(Factology)                       │
+  │                                                 │
+  │  @structural @fact("Neuron count", "neurons")   │
+  │  def neuron_count(self):                        │
+  │      return len(self.annotations)               │
+  │                                                 │
+  │  @connectomic @fact("Top NT", None)             │
+  │  def dominant_neurotransmitter(self):            │
+  │      return ...                                 │
+  │                                                 │
+  │  .collect() → [Fact, Fact, ...]                 │
+  └──────────────┬──────────────────────────────────┘
+                 │
+                 ▼
+  ┌──────────────────────────┐
+  │  Fact(label, name,       │
+  │       description,       │
+  │       unit, value)       │
+  └──────────────────────────┘
+#+end_example
+
+The decorator stack:
+
+#+begin_example
+  @structural              ← registers in self.structural_facts, makes lazy
+    @fact("name", "unit")  ← wraps return value in Fact namedtuple
+      def method(self):    ← the actual measurement logic
+#+end_example
+
+Note the order: =@structural= is the /outer/ decorator (applied last, executed first
+when calling). It receives the =@fact=-wrapped method and makes it lazy + registered.
+
+* Implementation
+
+** Factology subpackage init
+
+#+begin_src python :tangle ../bravli/factology/__init__.py
+"""factology — Structured scientific measurements.
+
+Every measurement is a Fact: a named, described, typed value. A Factology
+is a collection of Facts about a subject (a neuropil, a cell type, etc.).
+"""
+
+from .fact import Fact, fact, structural, connectomic, interface
+from .factology import Factology, NeuropilFacts
+#+end_src
+
+** Fact namedtuple and decorators
+
+The =Fact= is a namedtuple because namedtuples are immutable, serializable, and have
+named fields. A =Fact= is not a mutable object you build up — it is a /record/ of a
+measurement that has already been made.
+
+#+begin_src python :tangle ../bravli/factology/fact.py
+"""Fact: the atomic unit of scientific measurement.
+
+Heritage: ported from circuit-factology (Blue Brain Project). The core
+pattern — Fact namedtuple + @fact decorator + @anatomical/@physiological
+registration — is preserved. Renamed to @structural/@connectomic to
+match the fly brain domain.
+"""
+
+from collections import namedtuple
+from functools import wraps
+
+
+# ---------------------------------------------------------------------------
+# The Fact namedtuple
+# ---------------------------------------------------------------------------
+
+class Fact(namedtuple("Fact", ["label", "name", "description", "unit", "value"])):
+    """A single scientific measurement with full metadata.
+
+    Fields
+    ------
+    label : str
+        Machine-readable identifier (typically the method name).
+    name : str
+        Human-readable name (e.g., "Total neuron count").
+    description : str
+        What was measured and how (from the method's docstring).
+    unit : str or None
+        Unit of measurement (e.g., "neurons", "proportion", None).
+    value : any
+        The measured value.
+    """
+
+    def __str__(self):
+        unit_str = f" {self.unit}" if self.unit else ""
+        return f"{self.name}: {self.value}{unit_str}"
+
+    def to_dict(self):
+        """Convert to a plain dict for serialization."""
+        return {
+            "label": self.label,
+            "name": self.name,
+            "description": self.description,
+            "unit": self.unit,
+            "value": self.value,
+        }
+
+
+# ---------------------------------------------------------------------------
+# @fact(name, unit) — wrap a method's return value in a Fact
+# ---------------------------------------------------------------------------
+
+def fact(name, unit=None):
+    """Decorator factory: wrap a method's return value as a Fact.
+
+    Usage::
+
+        @fact("Neuron count", "neurons")
+        def neuron_count(self):
+            '''Total number of annotated neurons.'''
+            return len(self.annotations)
+
+    When called, returns a Fact with:
+        label = "neuron_count" (method name)
+        name = "Neuron count" (from decorator)
+        description = "Total number of annotated neurons." (docstring)
+        unit = "neurons" (from decorator)
+        value = <the return value>
+    """
+    def decorator(method):
+        @wraps(method)
+        def wrapper(self):
+            value = method(self)
+            return Fact(
+                label=method.__name__,
+                name=name,
+                description=method.__doc__ or "",
+                unit=unit,
+                value=value,
+            )
+        wrapper.__defines_a_fact__ = True
+        wrapper._fact_name = name
+        wrapper._fact_unit = unit
+        return wrapper
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @structural / @connectomic — register and cache facts by category
+# ---------------------------------------------------------------------------
+
+def structural(method):
+    """Decorator: register a fact as structural and make it a cached property.
+
+    Structural facts describe the anatomy: neuron counts, cell type
+    distributions, region volumes, morphological statistics.
+    """
+    @wraps(method)
+    def wrapper(self):
+        value = method(self)
+        if not hasattr(self, '_structural_facts'):
+            self._structural_facts = []
+        self._structural_facts.append(value)
+        return value
+    wrapper.__defines_a_fact__ = True
+    wrapper.__fact_type__ = "structural"
+    # Make it a cached property
+    return _cached_property(wrapper)
+
+
+def connectomic(method):
+    """Decorator: register a fact as connectomic and make it a cached property.
+
+    Connectomic facts describe connectivity: synapse counts, input/output
+    regions, degree distributions, connection probabilities.
+    """
+    @wraps(method)
+    def wrapper(self):
+        value = method(self)
+        if not hasattr(self, '_connectomic_facts'):
+            self._connectomic_facts = []
+        self._connectomic_facts.append(value)
+        return value
+    wrapper.__defines_a_fact__ = True
+    wrapper.__fact_type__ = "connectomic"
+    return _cached_property(wrapper)
+
+
+def _cached_property(method):
+    """Turn a method into a cached property (computed once, then stored)."""
+    attr_name = f"_cached_{method.__name__}"
+
+    @wraps(method)
+    def wrapper(self):
+        if not hasattr(self, attr_name):
+            setattr(self, attr_name, method(self))
+        return getattr(self, attr_name)
+
+    # Preserve the fact metadata
+    for attr in ('__defines_a_fact__', '__fact_type__', '_fact_name', '_fact_unit'):
+        if hasattr(method, attr):
+            setattr(wrapper, attr, getattr(method, attr))
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
+# @interface — two-level delegation
+# ---------------------------------------------------------------------------
+
+def interface(method):
+    """Decorator: declare a method as part of the class interface.
+
+    If the method raises NotImplementedError, the decorator tries to find
+    an implementation on self._helper. This lets a Factology work with
+    different data backends by swapping the helper object.
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except NotImplementedError:
+            if not hasattr(self, '_helper') or self._helper is None:
+                raise
+            helper_method = getattr(self._helper, method.__name__, None)
+            if helper_method is None:
+                raise NotImplementedError(
+                    f"{method.__name__} not implemented on {self.__class__.__name__} "
+                    f"or its helper {self._helper.__class__.__name__}"
+                )
+            return helper_method(*args, **kwargs)
+    return wrapper
+#+end_src
+
+** Factology ABC and NeuropilFacts
+
+The =Factology= base class provides the collection infrastructure: iterate over all
+methods marked with =__defines_a_fact__=, call each one, and gather the results.
+
+=NeuropilFacts= is the concrete implementation for fly brain neuropils. It takes a
+DataFrame of neuron annotations (for one neuropil or class) and computes a standard
+set of facts.
+
+#+begin_src python :tangle ../bravli/factology/factology.py
+"""Factology: structured factsheets for brain regions.
+
+Heritage: the Factology ABC pattern comes from circuit-factology (BBP).
+NeuropilFacts is the fly-brain-specific concrete implementation.
+"""
+
+from abc import ABC, abstractmethod
+from collections import OrderedDict
+
+import pandas as pd
+
+from bravli.factology.fact import Fact, fact, structural, connectomic
+from bravli.utils import get_logger
+
+LOG = get_logger("factology")
+
+
+class Factology(ABC):
+    """Abstract base: a collection of Facts about a subject.
+
+    Subclasses define measurement methods decorated with @fact, @structural,
+    or @connectomic. The .collect() method gathers all defined facts.
+    """
+
+    def __init__(self, annotations, target=None, helper=None):
+        """
+        Parameters
+        ----------
+        annotations : pd.DataFrame
+            Neuron annotation data for the subject.
+        target : str, optional
+            Name of the target (e.g., neuropil name).
+        helper : object, optional
+            Backend providing @interface implementations.
+        """
+        self.annotations = annotations
+        self.target = target
+        self._helper = helper
+        self._structural_facts = []
+        self._connectomic_facts = []
+
+    @classmethod
+    def fact_methods(cls):
+        """List all methods decorated with @fact."""
+        return [name for name in dir(cls)
+                if hasattr(getattr(cls, name, None), '__defines_a_fact__')]
+
+    def collect(self, mode="prod"):
+        """Collect all defined facts.
+
+        Parameters
+        ----------
+        mode : str
+            "prod" raises on errors; "dev" tolerates and logs them.
+
+        Returns
+        -------
+        list of Fact
+        """
+        results = []
+        for method_name in self.fact_methods():
+            try:
+                value = getattr(self, method_name)
+                if callable(value):
+                    value = value()
+                results.append(value)
+            except Exception as e:
+                if mode == "prod":
+                    raise
+                LOG.warning("Skipping fact '%s': %s", method_name, e)
+                results.append(None)
+        return [r for r in results if r is not None]
+
+    def collect_dicts(self, mode="prod"):
+        """Collect facts as a list of dicts (for JSON/DataFrame export)."""
+        return [f.to_dict() for f in self.collect(mode=mode)]
+
+    def to_dataframe(self, mode="prod"):
+        """Collect facts into a DataFrame."""
+        return pd.DataFrame(self.collect_dicts(mode=mode))
+
+
+class NeuropilFacts(Factology):
+    """Factsheet for a fly brain neuropil or cell class.
+
+    Given a subset of the FlyWire annotation table (e.g., all neurons
+    in a particular super_class or cell_class), computes a standard set
+    of structural facts.
+    """
+
+    @structural
+    @fact("Neuron count", "neurons")
+    def neuron_count(self):
+        """Total number of annotated neurons."""
+        return len(self.annotations)
+
+    @structural
+    @fact("Cell type count", "types")
+    def cell_type_count(self):
+        """Number of distinct cell types."""
+        if "cell_type" not in self.annotations.columns:
+            return 0
+        return self.annotations["cell_type"].nunique()
+
+    @structural
+    @fact("Top cell types", None)
+    def top_cell_types(self):
+        """Five most abundant cell types (name: count)."""
+        if "cell_type" not in self.annotations.columns:
+            return {}
+        counts = self.annotations["cell_type"].value_counts().head(5)
+        return dict(counts)
+
+    @structural
+    @fact("Neurotransmitter breakdown", None)
+    def neurotransmitter_breakdown(self):
+        """Neuron counts by predicted neurotransmitter."""
+        if "top_nt" not in self.annotations.columns:
+            return {}
+        counts = self.annotations["top_nt"].value_counts()
+        return dict(counts)
+
+    @structural
+    @fact("Dominant neurotransmitter", None)
+    def dominant_neurotransmitter(self):
+        """The most common predicted neurotransmitter."""
+        if "top_nt" not in self.annotations.columns:
+            return "unknown"
+        return self.annotations["top_nt"].value_counts().index[0]
+
+    @structural
+    @fact("Hemisphere balance", None)
+    def hemisphere_balance(self):
+        """Neuron counts by hemisphere (left vs right)."""
+        if "side" not in self.annotations.columns:
+            return {}
+        counts = self.annotations["side"].value_counts()
+        return dict(counts)
+#+end_src
+
+** Tests
+
+#+begin_src python :tangle ../tests/test_factology.py
+"""Tests for the Factology system."""
+
+import pandas as pd
+import pytest
+
+from bravli.factology.fact import Fact, fact, structural, connectomic, interface
+from bravli.factology.factology import Factology, NeuropilFacts
+
+
+@pytest.fixture
+def mushroom_body_neurons():
+    """Synthetic mushroom body annotation data."""
+    return pd.DataFrame({
+        "root_id": range(1, 16),
+        "super_class": ["central"] * 15,
+        "cell_class": ["KC"] * 10 + ["MBON"] * 3 + ["MBIN"] * 2,
+        "cell_type": (
+            ["KC_alpha"] * 4 + ["KC_beta"] * 3 + ["KC_gamma"] * 3 +
+            ["MBON_01"] * 2 + ["MBON_05"] * 1 +
+            ["MBIN_a"] + ["MBIN_b"]
+        ),
+        "top_nt": (
+            ["acetylcholine"] * 10 +
+            ["glutamate"] * 3 +
+            ["dopamine"] * 2
+        ),
+        "top_nt_conf": [0.92] * 15,
+        "side": ["right"] * 8 + ["left"] * 7,
+    })
+
+
+class TestFact:
+    def test_fact_creation(self):
+        f = Fact("n", "Count", "How many", "neurons", 42)
+        assert f.value == 42
+        assert f.unit == "neurons"
+
+    def test_fact_str(self):
+        f = Fact("n", "Count", "How many", "neurons", 42)
+        assert "42" in str(f)
+        assert "neurons" in str(f)
+
+    def test_fact_to_dict(self):
+        f = Fact("n", "Count", "How many", "neurons", 42)
+        d = f.to_dict()
+        assert d["label"] == "n"
+        assert d["value"] == 42
+
+
+class TestFactDecorator:
+    def test_fact_wraps_return_value(self):
+        class MyFacts:
+            @fact("Test", "units")
+            def measure(self):
+                """A test measurement."""
+                return 99
+
+        f = MyFacts()
+        result = f.measure()
+        assert isinstance(result, Fact)
+        assert result.value == 99
+        assert result.name == "Test"
+        assert result.unit == "units"
+        assert result.label == "measure"
+
+
+class TestNeuropilFacts:
+    def test_neuron_count(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        result = facts.neuron_count()
+        assert isinstance(result, Fact)
+        assert result.value == 15
+
+    def test_cell_type_count(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        result = facts.cell_type_count()
+        # KC_alpha, KC_beta, KC_gamma, MBON_01, MBON_05, MBIN_a, MBIN_b = 7
+        assert result.value == 7
+
+    def test_dominant_neurotransmitter(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        result = facts.dominant_neurotransmitter()
+        assert result.value == "acetylcholine"
+
+    def test_collect(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        all_facts = facts.collect()
+        assert len(all_facts) >= 5
+        labels = [f.label for f in all_facts]
+        assert "neuron_count" in labels
+        assert "neurotransmitter_breakdown" in labels
+
+    def test_collect_dicts(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        dicts = facts.collect_dicts()
+        assert all(isinstance(d, dict) for d in dicts)
+        assert all("label" in d for d in dicts)
+
+    def test_to_dataframe(self, mushroom_body_neurons):
+        facts = NeuropilFacts(mushroom_body_neurons, target="MB")
+        df = facts.to_dataframe()
+        assert isinstance(df, pd.DataFrame)
+        assert "label" in df.columns
+        assert len(df) >= 5
+
+    def test_dev_mode_tolerates_errors(self):
+        """Dev mode should skip broken facts, not crash."""
+        empty = pd.DataFrame(columns=["root_id"])
+        facts = NeuropilFacts(empty, target="empty")
+        # This should not raise even if some facts fail
+        results = facts.collect(mode="dev")
+        # May have some None-filtered results
+        assert isinstance(results, list)
+
+
+class TestInterface:
+    def test_delegates_to_helper(self):
+        class Helper:
+            def compute(self):
+                return 42
+
+        class MyFacts(Factology):
+            @interface
+            def compute(self):
+                raise NotImplementedError
+
+        helper = Helper()
+        f = MyFacts(pd.DataFrame(), helper=helper)
+        assert f.compute() == 42
+
+    def test_raises_without_helper(self):
+        class MyFacts(Factology):
+            @interface
+            def compute(self):
+                raise NotImplementedError
+
+        f = MyFacts(pd.DataFrame())
+        with pytest.raises(NotImplementedError):
+            f.compute()
+#+end_src
+
+* Key Design Decisions
+
+| Decision                               | Rationale                                                            |
+|----------------------------------------+----------------------------------------------------------------------|
+| =Fact= is a namedtuple, not a dataclass | Immutable, hashable, serializable. A fact is a record, not an object.|
+| =@structural= / =@connectomic= names  | BBP used =@anatomical= / =@physiological=. We rename for the fly domain. |
+| Cached property, not =lazy= package    | Avoid external dependency. Same behavior with =_cached_= attribute.  |
+| =mode="dev"= tolerates errors          | During exploration, you want partial results, not crashes.           |
+| =@interface= delegation to helper       | Swappable backends: FlyWire today, CAVE API tomorrow, DVID next year.|
+
+* Exercises for the Reader
+
+1. *Add a connectomic fact*: Add a =@connectomic @fact= method to =NeuropilFacts= that
+   counts the number of unique =flow= types (intrinsic, sensory, efferent, etc.).
+
+2. *Custom Factology*: Create a =CellTypeFacts(Factology)= that takes annotations for
+   a single cell type and reports: total count, hemisphere distribution, neurotransmitter,
+   and which super_classes it appears in.
+
+3. *Factsheet comparison*: Compute =NeuropilFacts= for "central" and "optic" super_classes.
+   Put both into a DataFrame side by side. What stands out?
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 03-factology
+tag: lesson/03-factology
+files_created:
+  - bravli/factology/__init__.py
+  - bravli/factology/fact.py
+  - bravli/factology/factology.py
+  - tests/test_factology.py
+verification:
+  - "python -c 'from bravli.factology import Fact, NeuropilFacts' succeeds"
+  - "pytest tests/test_factology.py -v — all tests pass"
+next_lesson: 04-visualization
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

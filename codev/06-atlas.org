@@ -1,0 +1,1023 @@
+#+title: Lesson 06 — The Volumetric Atlas
+#+subtitle: From point clouds to morphologies: building a 3D fly brain you can hold in your hands
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+In Lesson 04 we wrapped navis for general visualization.  In Lesson 05 we
+explored the mushroom body through tables and factsheets.  But the plots we
+produced — scatter clouds of neuron positions — were /shadows/ of the real
+brain: dimensionless dots where there should be branching arbors, and empty
+space where there should be neuropil boundaries.
+
+This lesson makes the brain /real/.  We will:
+
+1. Load the *78 neuropil boundary meshes* that partition the fly brain into
+   named regions (MB calyx, antennal lobe, medulla, ...), bundled inside
+   the ~fafbseg~ package — no authentication required.
+2. Load *neuron skeletons* — the branching morphologies of individual neurons —
+   from the 5.1 GB Zenodo parquet file containing all 139,244 FlyWire neurons.
+3. Place the skeletons /inside/ the neuropil meshes, producing an interactive
+   3D atlas where you can rotate the brain, toggle neuropils on and off, and
+   hover over individual axonal branches to see which neuron they belong to.
+
+The result is not a picture.  It is a /navigable instrument/ — the kind of
+thing that, at the Blue Brain Project, required a render farm, custom OpenGL
+shaders, and months of engineering.  Here we do it in 50 lines of Python,
+on a laptop, with publicly available data.
+
+** Why this matters
+
+The gap between "I have the data" and "I understand the data" is filled by
+visualization.  A table of 5,608 mushroom body neurons tells you the count.
+A 3D rendering of their branching trees inside the calyx, pedunculus, and
+lobes tells you the /architecture/: how Kenyon cell dendrites fill the calyx
+like a dense canopy, how their axons converge through the narrow pedunculus,
+and how they splay apart into the vertical and medial lobes where MBONs
+read them out.
+
+This is the "observing eye" of the MayaPortal philosophy.  Before we model,
+we must see.
+
+** Learning Objectives
+   - [ ] Load the 78 neuropil meshes from fafbseg without authentication
+   - [ ] Load neuron skeletons from the Zenodo parquet using navis
+   - [ ] Understand FlyWire coordinate systems (nm, voxel) and how they align
+   - [ ] Render a whole-brain atlas with color-coded neuropil regions
+   - [ ] Overlay neuron morphologies inside specific neuropil compartments
+   - [ ] Produce publication-quality interactive HTML visualizations
+
+** File Map
+   | File                       | Role                                   | Tangled from |
+   |----------------------------+----------------------------------------+--------------|
+   | bravli/atlas/__init__.py   | Package exports                        | this file    |
+   | bravli/atlas/neuropils.py  | Load and query neuropil meshes         | this file    |
+   | bravli/atlas/skeletons.py  | Load neuron skeletons from parquet     | this file    |
+   | bravli/atlas/render.py     | Atlas rendering functions              | this file    |
+   | tests/test_atlas.py        | Smoke tests for atlas module           | this file    |
+
+* Architecture
+
+#+begin_example
+                    ┌──────────────────────────────────┐
+                    │       Lesson 06: Atlas            │
+                    │                                   │
+                    │  neuropils.py   skeletons.py      │
+                    │       │              │            │
+                    │       └──────┬───────┘            │
+                    │              │                    │
+                    │         render.py                 │
+                    │              │                    │
+                    │         plotly HTML               │
+                    └──────────────┬────────────────────┘
+                                   │ uses
+                    ┌──────────────┼──────────────┐
+                    │              │              │
+               ┌────▼────┐  ┌─────▼─────┐  ┌────▼────┐
+               │ fafbseg │  │   navis   │  │ plotly  │
+               │ (PLY    │  │ (parquet  │  │ (HTML   │
+               │  meshes)│  │  reader)  │  │  render)│
+               └─────────┘  └───────────┘  └─────────┘
+#+end_example
+
+The module has three layers:
+
+- *neuropils.py*: wraps ~fafbseg.flywire.get_neuropil_volumes()~ to load,
+  cache, and query the 78 neuropil meshes.  Provides grouping by brain
+  region (optic lobe, central brain, central complex, mushroom body, ...).
+
+- *skeletons.py*: wraps ~navis.read_parquet()~ to load neuron skeletons
+  by root ID from the Zenodo parquet file.  Handles the mapping from
+  annotation table → root IDs → skeleton data.
+
+- *render.py*: combines meshes and skeletons into plotly figures.  Three
+  rendering modes: whole-brain atlas, neuropil-focused view, and
+  morphology overlay.
+
+* Data Sources — What We Use and Why
+
+Two public datasets, both free, both auth-free:
+
+** Neuropil meshes: fafbseg bundled PLY files
+
+The ~fafbseg~ Python package ships a ZIP file (~JFRC2NP.surf.fw.zip~)
+containing PLY meshes for all 78 FlyWire neuropils.  These were originally
+derived from the Ito et al. (2014) neuropil nomenclature in JFRC2 template
+space, then transformed into FAFB14.1 (FlyWire) coordinates.
+
+Each mesh is a lightweight surface: typically 300–1,500 vertices and
+600–3,000 faces.  The total for all 78 neuropils is under 1 MB — trivial
+to load and render.
+
+Coordinates are in *nanometres* in FlyWire/FAFB14.1 space.
+
+** Neuron skeletons: Zenodo parquet
+
+The file ~sk_lod1_783_healed_ds2.parquet~ (5.1 GB, DOI: 10.5281/zenodo.10877326)
+contains skeletonized morphologies for all 139,244 proofread FlyWire neurons
+from the 783 release.  These are level-of-detail 1 (lod1) skeletons, healed
+(broken branches reconnected) and downsampled 2× from the original mesh.
+
+Each skeleton has ~1,000–10,000 nodes (SWC-style: node_id, parent_id, x, y, z,
+radius).  A typical Kenyon cell has ~3,000 nodes; a large projection neuron
+can have 10,000+.
+
+Coordinates are in *nanometres* — same space as the neuropil meshes.
+
+~navis.read_parquet()~ can load a subset of neurons by ID without reading
+the entire file, thanks to parquet's columnar storage.
+
+** Coordinate alignment
+
+Both data sources live in the same coordinate system (FAFB14.1, nanometres),
+so neuron skeletons sit correctly inside neuropil meshes without any
+transformation.  The annotation table's ~pos_x~, ~pos_y~, ~pos_z~ columns
+are in *voxel* coordinates (4×4×40 nm resolution), so they must be multiplied
+by (4, 4, 40) to convert to nanometres.
+
+* Implementation
+
+** bravli/atlas/__init__.py
+
+#+begin_src python :tangle ../bravli/atlas/__init__.py
+"""Atlas: neuropil meshes, neuron skeletons, and whole-brain rendering."""
+
+from bravli.atlas.neuropils import (
+    load_neuropil,
+    load_neuropils,
+    list_neuropils,
+    NEUROPIL_GROUPS,
+)
+from bravli.atlas.skeletons import (
+    load_skeletons,
+    sample_neuron_ids,
+)
+from bravli.atlas.render import (
+    render_atlas,
+    render_neuropil_detail,
+    render_morphologies,
+)
+#+end_src
+
+** bravli/atlas/neuropils.py — neuropil mesh loading
+
+The fafbseg neuropil volumes are our atlas boundaries.  This module wraps
+them with caching (so we don't re-read PLY files on every call) and semantic
+grouping (so you can say "give me the mushroom body" and get all 8 MB
+compartments).
+
+#+begin_src python :tangle ../bravli/atlas/neuropils.py
+"""Load and query the 78 FlyWire neuropil boundary meshes.
+
+Data source: PLY files bundled with fafbseg, originally from the Ito et al.
+(2014) neuropil nomenclature, transformed to FlyWire/FAFB14.1 coordinates.
+No authentication required.
+"""
+
+from typing import Dict, List, Optional, Union
+from functools import lru_cache
+
+import numpy as np
+
+from bravli.utils import get_logger
+
+LOG = get_logger("atlas.neuropils")
+
+try:
+    from fafbseg import flywire as _fw
+    HAS_FAFBSEG = True
+except ImportError:
+    HAS_FAFBSEG = False
+
+
+# ---------------------------------------------------------------------------
+# Semantic grouping of the 78 neuropils
+# ---------------------------------------------------------------------------
+
+NEUROPIL_GROUPS: Dict[str, List[str]] = {
+    "mushroom_body": [
+        "MB_CA_R", "MB_CA_L", "MB_PED_R", "MB_PED_L",
+        "MB_VL_R", "MB_VL_L", "MB_ML_R", "MB_ML_L",
+    ],
+    "antennal_lobe": ["AL_R", "AL_L"],
+    "lateral_horn": ["LH_R", "LH_L"],
+    "central_complex": ["EB", "FB", "PB", "NO"],
+    "optic_medulla": ["ME_R", "ME_L"],
+    "optic_lobula": ["LO_R", "LO_L"],
+    "optic_lobula_plate": ["LOP_R", "LOP_L"],
+    "optic_lamina": ["LA_R", "LA_L"],
+    "optic_accessory_medulla": ["AME_R", "AME_L"],
+    "superior_protocerebrum": [
+        "SMP_R", "SMP_L", "SIP_R", "SIP_L", "SLP_R", "SLP_L",
+    ],
+    "ventrolateral_protocerebrum": [
+        "AVLP_R", "AVLP_L", "PVLP_R", "PVLP_L",
+    ],
+    "lateral_accessory_lobe": ["LAL_R", "LAL_L"],
+    "bulb": ["BU_R", "BU_L"],
+    "anterior_optic_tubercle": ["AOTU_R", "AOTU_L"],
+    "gnathal_ganglion": ["GNG"],
+    "other_midline": ["SAD", "PRW", "OCG"],
+}
+"""Semantic grouping of neuropil names by brain region."""
+
+
+def _require_fafbseg():
+    if not HAS_FAFBSEG:
+        raise ImportError(
+            "fafbseg is required for neuropil meshes. "
+            "Install with: pip install fafbseg"
+        )
+
+
+def list_neuropils():
+    """Return sorted list of all 78 neuropil names.
+
+    Returns
+    -------
+    list of str
+    """
+    _require_fafbseg()
+    return sorted(_fw.get_neuropil_volumes(None))
+
+
+@lru_cache(maxsize=128)
+def load_neuropil(name: str):
+    """Load a single neuropil mesh by name.
+
+    Parameters
+    ----------
+    name : str
+        Neuropil name (e.g., 'MB_CA_R', 'AL_L', 'EB').
+
+    Returns
+    -------
+    navis.Volume
+        Mesh with .vertices (N,3) and .faces (M,3) in nanometres.
+    """
+    _require_fafbseg()
+    vol = _fw.get_neuropil_volumes(name)
+    LOG.debug("Loaded %s: %d vertices, %d faces",
+              name, len(vol.vertices), len(vol.faces))
+    return vol
+
+
+def load_neuropils(
+    names: Optional[Union[str, List[str]]] = None,
+    group: Optional[str] = None,
+) -> Dict[str, object]:
+    """Load multiple neuropil meshes.
+
+    Parameters
+    ----------
+    names : str or list of str, optional
+        Specific neuropil names to load.  If None, loads all 78.
+    group : str, optional
+        A group name from NEUROPIL_GROUPS (e.g., 'mushroom_body').
+        Overrides `names` if provided.
+
+    Returns
+    -------
+    dict
+        {neuropil_name: navis.Volume}
+    """
+    if group is not None:
+        if group not in NEUROPIL_GROUPS:
+            raise KeyError(
+                f"Unknown group '{group}'. "
+                f"Available: {sorted(NEUROPIL_GROUPS.keys())}"
+            )
+        names = NEUROPIL_GROUPS[group]
+    elif names is None:
+        names = list_neuropils()
+    elif isinstance(names, str):
+        names = [names]
+
+    LOG.info("Loading %d neuropil meshes", len(names))
+    return {name: load_neuropil(name) for name in names}
+#+end_src
+
+** bravli/atlas/skeletons.py — neuron skeleton loading
+
+The Zenodo parquet contains all 139K skeletons.  We need to be selective:
+loading all of them would use tens of gigabytes of RAM.  This module provides
+functions to sample neuron IDs by cell class / cell type / neuropil and load
+only those skeletons.
+
+#+begin_src python :tangle ../bravli/atlas/skeletons.py
+"""Load neuron skeletons from the Zenodo FlyWire parquet file.
+
+Data source: sk_lod1_783_healed_ds2.parquet (5.1 GB)
+  DOI: 10.5281/zenodo.10877326
+  Contains: TreeNeuron skeletons for all 139,244 FlyWire 783 neurons
+  Coordinates: nanometres in FAFB14.1 space
+"""
+
+from pathlib import Path
+from typing import List, Optional, Union
+
+import pandas as pd
+
+from bravli.utils import get_logger
+
+LOG = get_logger("atlas.skeletons")
+
+try:
+    import navis
+    HAS_NAVIS = True
+except ImportError:
+    HAS_NAVIS = False
+
+# Default path (relative to repo root)
+DEFAULT_PARQUET = Path("data/zenodo/sk_lod1_783_healed_ds2.parquet")
+
+
+def load_skeletons(
+    root_ids: List[int],
+    parquet_path: Optional[Union[str, Path]] = None,
+) -> "navis.NeuronList":
+    """Load neuron skeletons by root ID from the Zenodo parquet.
+
+    Parameters
+    ----------
+    root_ids : list of int
+        FlyWire root IDs of neurons to load.
+    parquet_path : str or Path, optional
+        Path to the skeleton parquet file.  Defaults to
+        data/zenodo/sk_lod1_783_healed_ds2.parquet.
+
+    Returns
+    -------
+    navis.NeuronList
+        Loaded TreeNeuron skeletons.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the parquet file does not exist.
+    ImportError
+        If navis is not installed.
+    """
+    if not HAS_NAVIS:
+        raise ImportError("navis is required. Install with: pip install navis")
+
+    path = Path(parquet_path) if parquet_path else DEFAULT_PARQUET
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Skeleton parquet not found at {path}. "
+            "Download from: https://doi.org/10.5281/zenodo.10877326"
+        )
+
+    LOG.info("Loading %d skeletons from %s", len(root_ids), path.name)
+    neurons = navis.read_parquet(str(path), subset=root_ids)
+    LOG.info("Loaded %d neurons (total %d nodes)",
+             len(neurons),
+             sum(n.n_nodes for n in neurons))
+    return neurons
+
+
+def sample_neuron_ids(
+    annotations: pd.DataFrame,
+    cell_class: Optional[str] = None,
+    cell_type: Optional[str] = None,
+    side: str = "right",
+    n: int = 5,
+) -> List[int]:
+    """Sample root IDs from the annotation table.
+
+    Filters annotations by cell_class, cell_type, and hemisphere,
+    then returns the first `n` root IDs.  Deterministic (no randomness)
+    so results are reproducible.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        FlyWire annotation table with 'root_id', 'cell_class',
+        'cell_type', 'side' columns.
+    cell_class : str, optional
+        Filter by cell_class (e.g., 'Kenyon_Cell', 'MBON', 'DAN').
+    cell_type : str, optional
+        Filter by cell_type (e.g., 'KCg-m', 'PAM01').
+    side : str
+        Hemisphere filter: 'right', 'left', or 'both'.
+    n : int
+        Number of IDs to return.
+
+    Returns
+    -------
+    list of int
+        Root IDs suitable for `load_skeletons()`.
+    """
+    mask = pd.Series(True, index=annotations.index)
+
+    if cell_class is not None:
+        mask &= annotations["cell_class"] == cell_class
+    if cell_type is not None:
+        mask &= annotations["cell_type"] == cell_type
+    if side != "both" and "side" in annotations.columns:
+        mask &= annotations["side"] == side
+
+    filtered = annotations[mask]
+    ids = filtered["root_id"].head(n).tolist()
+    LOG.debug("Sampled %d IDs (class=%s, type=%s, side=%s)",
+              len(ids), cell_class, cell_type, side)
+    return ids
+#+end_src
+
+** bravli/atlas/render.py — atlas rendering
+
+This is where everything comes together.  Three rendering functions, each
+producing a self-contained interactive HTML file:
+
+- ~render_atlas~: the whole brain, 78 neuropils, optionally with skeleton
+  overlays
+- ~render_neuropil_detail~: a single neuropil group (e.g., mushroom body)
+  with its compartments and neurons
+- ~render_morphologies~: neuron skeletons only, colored by property
+
+The design mirrors Lesson 04's viz module but operates at a higher level:
+instead of raw navis objects, these functions accept bravli's domain objects
+(neuropil names, annotation DataFrames, root IDs).
+
+#+begin_src python :tangle ../bravli/atlas/render.py
+"""Render the fly brain atlas: neuropil meshes + neuron morphologies.
+
+Produces interactive plotly HTML figures combining neuropil boundary
+meshes from fafbseg with neuron skeletons from the Zenodo parquet.
+"""
+
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+
+from bravli.atlas.neuropils import (
+    load_neuropils,
+    NEUROPIL_GROUPS,
+)
+from bravli.utils import get_logger
+
+LOG = get_logger("atlas.render")
+
+try:
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
+
+
+def _require_plotly():
+    if not HAS_PLOTLY:
+        raise ImportError("plotly is required. Install with: pip install plotly")
+
+
+# ---------------------------------------------------------------------------
+# Color schemes
+# ---------------------------------------------------------------------------
+
+REGION_COLORS = {
+    "mushroom_body": "#F44336",
+    "antennal_lobe": "#4CAF50",
+    "lateral_horn": "#FF9800",
+    "central_complex": "#9C27B0",
+    "optic_medulla": "#90CAF9",
+    "optic_lobula": "#64B5F6",
+    "optic_lobula_plate": "#42A5F5",
+    "optic_lamina": "#BBDEFB",
+    "optic_accessory_medulla": "#E3F2FD",
+    "superior_protocerebrum": "#FFAB91",
+    "ventrolateral_protocerebrum": "#FFCC80",
+    "lateral_accessory_lobe": "#CE93D8",
+    "bulb": "#F48FB1",
+    "anterior_optic_tubercle": "#80CBC4",
+    "gnathal_ganglion": "#A1887F",
+    "other_midline": "#78909C",
+}
+"""Colors for neuropil groups."""
+
+DARK_THEME = dict(
+    bgcolor="#0d1117",
+    paper_bgcolor="#0d1117",
+    font_color="white",
+)
+
+
+def _neuropil_color(name):
+    """Get color for a neuropil based on its group membership."""
+    for group, members in NEUROPIL_GROUPS.items():
+        if name in members:
+            return REGION_COLORS.get(group, "#546E7A")
+    return "#546E7A"
+
+
+# ---------------------------------------------------------------------------
+# Skeleton → plotly line trace
+# ---------------------------------------------------------------------------
+
+def _skeleton_lines(neuron):
+    """Convert a TreeNeuron to plotly-compatible line arrays.
+
+    Returns (xs, ys, zs) where segments are separated by None values,
+    suitable for Scatter3d with mode='lines'.
+    """
+    nodes = neuron.nodes
+    coords = dict(zip(
+        nodes["node_id"],
+        zip(nodes["x"], nodes["y"], nodes["z"]),
+    ))
+
+    xs, ys, zs = [], [], []
+    for nid, pid in zip(nodes["node_id"], nodes["parent_id"]):
+        if pid >= 0 and pid in coords:
+            x0, y0, z0 = coords[nid]
+            x1, y1, z1 = coords[pid]
+            xs.extend([x0, x1, None])
+            ys.extend([y0, y1, None])
+            zs.extend([z0, z1, None])
+    return xs, ys, zs
+
+
+# ---------------------------------------------------------------------------
+# render_atlas — whole brain
+# ---------------------------------------------------------------------------
+
+def render_atlas(
+    neurons=None,
+    neuron_color: str = "#00E676",
+    highlight_groups: Optional[List[str]] = None,
+    title: str = "Drosophila whole-brain atlas",
+    width: int = 1300,
+    height: int = 900,
+) -> "go.Figure":
+    """Render the whole-brain atlas with all 78 neuropil meshes.
+
+    Parameters
+    ----------
+    neurons : navis.NeuronList, optional
+        Neuron skeletons to overlay.
+    neuron_color : str
+        Default color for neuron skeletons.
+    highlight_groups : list of str, optional
+        Neuropil groups to render at higher opacity (e.g.,
+        ['mushroom_body', 'central_complex']).
+    title : str
+        Figure title.
+    width, height : int
+        Figure dimensions in pixels.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    _require_plotly()
+
+    highlight = set()
+    if highlight_groups:
+        for g in highlight_groups:
+            highlight.update(NEUROPIL_GROUPS.get(g, []))
+
+    fig = go.Figure()
+    meshes = load_neuropils()
+
+    for name, vol in sorted(meshes.items()):
+        v = np.asarray(vol.vertices)
+        f = np.asarray(vol.faces)
+        is_highlighted = name in highlight
+        color = _neuropil_color(name)
+        opacity = 0.2 if is_highlighted else 0.06
+
+        fig.add_trace(go.Mesh3d(
+            x=v[:, 0], y=v[:, 1], z=v[:, 2],
+            i=f[:, 0], j=f[:, 1], k=f[:, 2],
+            color=color, opacity=opacity,
+            name=name, hoverinfo="name",
+            showlegend=is_highlighted,
+        ))
+
+    if neurons is not None:
+        _add_neurons(fig, neurons, color=neuron_color)
+
+    _apply_layout(fig, title=title, width=width, height=height)
+    LOG.info("Rendered whole-brain atlas with %d neuropils", len(meshes))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# render_neuropil_detail — focused view
+# ---------------------------------------------------------------------------
+
+def render_neuropil_detail(
+    group: str,
+    neurons=None,
+    neuron_meta: Optional[Dict[int, Dict]] = None,
+    title: Optional[str] = None,
+    width: int = 1200,
+    height: int = 800,
+) -> "go.Figure":
+    """Render a focused view of a neuropil group with neuron overlays.
+
+    Parameters
+    ----------
+    group : str
+        Neuropil group name (e.g., 'mushroom_body', 'antennal_lobe').
+    neurons : navis.NeuronList, optional
+        Neuron skeletons to overlay.
+    neuron_meta : dict, optional
+        {root_id: {'class': str, 'type': str}} for coloring neurons.
+    title : str, optional
+        Figure title. Defaults to the group name.
+    width, height : int
+        Figure dimensions.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    _require_plotly()
+
+    meshes = load_neuropils(group=group)
+    fig = go.Figure()
+
+    # Distinct color per compartment
+    compartment_colors = [
+        "#F44336", "#EF9A9A", "#FF9800", "#FFCC80",
+        "#4CAF50", "#A5D6A7", "#2196F3", "#90CAF9",
+        "#9C27B0", "#CE93D8", "#FF5722", "#FFAB91",
+    ]
+    for i, (name, vol) in enumerate(sorted(meshes.items())):
+        v = np.asarray(vol.vertices)
+        f = np.asarray(vol.faces)
+        color = compartment_colors[i % len(compartment_colors)]
+        fig.add_trace(go.Mesh3d(
+            x=v[:, 0], y=v[:, 1], z=v[:, 2],
+            i=f[:, 0], j=f[:, 1], k=f[:, 2],
+            color=color, opacity=0.12,
+            name=name, hoverinfo="name",
+        ))
+
+    if neurons is not None:
+        _add_neurons(fig, neurons, meta=neuron_meta)
+
+    _apply_layout(
+        fig,
+        title=title or f"{group.replace('_', ' ').title()} — neuropil detail",
+        width=width, height=height,
+    )
+    LOG.info("Rendered detail view for '%s' with %d compartments",
+             group, len(meshes))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# render_morphologies — skeletons only
+# ---------------------------------------------------------------------------
+
+def render_morphologies(
+    neurons,
+    meta: Optional[Dict[int, Dict]] = None,
+    title: str = "Neuron morphologies",
+    width: int = 1200,
+    height: int = 800,
+) -> "go.Figure":
+    """Render neuron skeletons colored by metadata.
+
+    Parameters
+    ----------
+    neurons : navis.NeuronList
+        Skeletons to render.
+    meta : dict, optional
+        {root_id: {'class': str, 'type': str}} for legend grouping
+        and coloring.
+    title : str
+        Figure title.
+    width, height : int
+        Figure dimensions.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+    """
+    _require_plotly()
+
+    fig = go.Figure()
+    _add_neurons(fig, neurons, meta=meta)
+    _apply_layout(fig, title=title, width=width, height=height)
+    LOG.info("Rendered %d neuron morphologies", len(neurons))
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+CLASS_COLORS = {
+    "Kenyon_Cell": "#00E676",
+    "MBON": "#E91E63",
+    "DAN": "#9C27B0",
+    "MBIN": "#FF9800",
+    "ALPN": "#4CAF50",
+    "ALLN": "#8BC34A",
+    "CX": "#2196F3",
+}
+
+
+def _add_neurons(fig, neurons, color=None, meta=None):
+    """Add neuron skeleton traces to a figure."""
+    added_legends = set()
+
+    for neuron in neurons:
+        nid = neuron.id
+        info = (meta or {}).get(nid, {})
+        cls = info.get("class", "neuron")
+        ct = info.get("type", str(nid))
+
+        neuron_color = color or CLASS_COLORS.get(cls, "#00E676")
+        legend = ct if meta else cls
+
+        show = legend not in added_legends
+        added_legends.add(legend)
+
+        xs, ys, zs = _skeleton_lines(neuron)
+        fig.add_trace(go.Scatter3d(
+            x=xs, y=ys, z=zs,
+            mode="lines",
+            line=dict(color=neuron_color, width=1.5),
+            name=legend,
+            showlegend=show,
+            legendgroup=legend,
+            hoverinfo="name",
+        ))
+
+
+def _apply_layout(fig, title, width, height):
+    """Apply standard dark-theme layout to a figure."""
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis_title="X (nm)",
+            yaxis_title="Y (nm)",
+            zaxis_title="Z (nm)",
+            aspectmode="data",
+            bgcolor=DARK_THEME["bgcolor"],
+        ),
+        paper_bgcolor=DARK_THEME["paper_bgcolor"],
+        font_color=DARK_THEME["font_color"],
+        width=width,
+        height=height,
+        legend=dict(x=0.01, y=0.99, bgcolor="rgba(13,17,23,0.8)"),
+    )
+#+end_src
+
+** tests/test_atlas.py — smoke tests
+
+#+begin_src python :tangle ../tests/test_atlas.py
+"""Smoke tests for bravli.atlas.
+
+Tests verify that atlas functions execute without error using the
+bundled fafbseg neuropil meshes.  Skeleton tests require the Zenodo
+parquet and are skipped if not present.
+"""
+
+import pytest
+import numpy as np
+from pathlib import Path
+
+fafbseg = pytest.importorskip("fafbseg")
+plotly = pytest.importorskip("plotly")
+
+from bravli.atlas.neuropils import (
+    list_neuropils,
+    load_neuropil,
+    load_neuropils,
+    NEUROPIL_GROUPS,
+)
+from bravli.atlas.render import (
+    render_atlas,
+    render_neuropil_detail,
+)
+
+PARQUET_PATH = Path(__file__).parent.parent / "data" / "zenodo" / "sk_lod1_783_healed_ds2.parquet"
+
+
+# ---------------------------------------------------------------------------
+# Neuropil tests
+# ---------------------------------------------------------------------------
+
+class TestNeuropils:
+
+    def test_list_returns_78(self):
+        """All 78 neuropils are available."""
+        names = list_neuropils()
+        assert len(names) == 78
+
+    def test_load_single(self):
+        """Loading a single neuropil returns a mesh."""
+        vol = load_neuropil("MB_CA_R")
+        assert hasattr(vol, "vertices")
+        assert hasattr(vol, "faces")
+        assert len(vol.vertices) > 100
+
+    def test_load_group(self):
+        """Loading a group returns dict of meshes."""
+        meshes = load_neuropils(group="mushroom_body")
+        assert len(meshes) == 8
+        assert "MB_CA_R" in meshes
+
+    def test_load_all(self):
+        """Loading all neuropils returns 78 meshes."""
+        meshes = load_neuropils()
+        assert len(meshes) == 78
+
+    def test_groups_cover_known_regions(self):
+        """Neuropil groups include major brain regions."""
+        assert "mushroom_body" in NEUROPIL_GROUPS
+        assert "central_complex" in NEUROPIL_GROUPS
+        assert "antennal_lobe" in NEUROPIL_GROUPS
+
+    def test_mb_has_four_compartments_per_side(self):
+        """MB group has calyx, pedunculus, vertical and medial lobes."""
+        mb = NEUROPIL_GROUPS["mushroom_body"]
+        for part in ["CA", "PED", "VL", "ML"]:
+            assert f"MB_{part}_R" in mb
+            assert f"MB_{part}_L" in mb
+
+
+# ---------------------------------------------------------------------------
+# Render tests
+# ---------------------------------------------------------------------------
+
+class TestRender:
+
+    def test_render_atlas_no_neurons(self):
+        """Whole-brain atlas renders without neurons."""
+        fig = render_atlas()
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+        assert len(fig.data) >= 78  # at least one trace per neuropil
+
+    def test_render_atlas_with_highlight(self):
+        """Atlas with highlighted groups renders."""
+        fig = render_atlas(highlight_groups=["mushroom_body", "central_complex"])
+        assert fig is not None
+
+    def test_render_neuropil_detail(self):
+        """Neuropil detail view renders."""
+        fig = render_neuropil_detail("mushroom_body")
+        import plotly.graph_objects as go
+        assert isinstance(fig, go.Figure)
+        # Should have 8 MB compartment traces
+        mesh_traces = [t for t in fig.data if isinstance(t, go.Mesh3d)]
+        assert len(mesh_traces) == 8
+
+
+# ---------------------------------------------------------------------------
+# Skeleton tests (require Zenodo parquet)
+# ---------------------------------------------------------------------------
+
+class TestSkeletons:
+
+    pytestmark = pytest.mark.skipif(
+        not PARQUET_PATH.exists(),
+        reason="Zenodo skeleton parquet not found",
+    )
+
+    def test_load_single_skeleton(self):
+        """Load a single skeleton by root ID."""
+        import pandas as pd
+        from bravli.atlas.skeletons import load_skeletons, sample_neuron_ids
+
+        ann = pd.read_csv(
+            Path(__file__).parent.parent / "data" / "flywire_annotations" / "Supplemental_file1_neuron_annotations.tsv",
+            sep="\t", low_memory=False,
+            usecols=["root_id", "cell_class", "cell_type", "side"],
+        )
+        ids = sample_neuron_ids(ann, cell_class="Kenyon_Cell", n=1)
+        assert len(ids) == 1
+
+        neurons = load_skeletons(ids, parquet_path=PARQUET_PATH)
+        assert len(neurons) == 1
+        assert neurons[0].n_nodes > 100
+
+    def test_render_with_skeletons(self):
+        """Atlas with skeleton overlay renders."""
+        import pandas as pd
+        from bravli.atlas.skeletons import load_skeletons, sample_neuron_ids
+
+        ann = pd.read_csv(
+            Path(__file__).parent.parent / "data" / "flywire_annotations" / "Supplemental_file1_neuron_annotations.tsv",
+            sep="\t", low_memory=False,
+            usecols=["root_id", "cell_class", "cell_type", "side"],
+        )
+        ids = sample_neuron_ids(ann, cell_class="MBON", n=2)
+        neurons = load_skeletons(ids, parquet_path=PARQUET_PATH)
+
+        fig = render_neuropil_detail("mushroom_body", neurons=neurons)
+        assert fig is not None
+        # Should have mesh traces + skeleton traces
+        assert len(fig.data) > 8
+#+end_src
+
+* Key Design Decisions
+  | Decision                                  | Rationale                                                        |
+  |-------------------------------------------+------------------------------------------------------------------|
+  | fafbseg for neuropil meshes, not VFB/NRRD | Bundled with the package, no auth, already in FlyWire space      |
+  | Zenodo parquet for skeletons, not CAVE    | Auth-free, bulk download, ~navis.read_parquet~ supports subsetting |
+  | lru_cache on neuropil loading             | PLY parsing is fast but needless to repeat; cache across calls   |
+  | Skeleton subset loading by root ID        | The full parquet is 5.1 GB / 139K neurons; subsetting is essential |
+  | plotly over navis.plot3d for atlas        | We need mesh + line overlay + custom layout; plotly is more flexible |
+  | Deterministic sampling (head, not random) | Reproducibility: same code → same neurons → same figure         |
+  | Dark theme by default                     | Neuroscience visualization convention; meshes pop against dark   |
+  | Group-based neuropil organization         | Scientists think "mushroom body" not "MB_CA_R + MB_PED_R + ..." |
+
+* How to Use
+
+** Quick start: render the whole brain
+
+#+begin_example python
+from bravli.atlas import render_atlas
+fig = render_atlas(highlight_groups=["mushroom_body", "central_complex"])
+fig.write_html("atlas.html")
+fig.show()
+#+end_example
+
+** Focused view with neuron morphologies
+
+#+begin_example python
+import pandas as pd
+from bravli.atlas import (
+    render_neuropil_detail,
+    load_skeletons,
+    sample_neuron_ids,
+)
+
+# Load annotations
+ann = pd.read_csv("data/flywire_annotations/Supplemental_file1_neuron_annotations.tsv",
+                   sep="\t", low_memory=False)
+
+# Sample 10 Kenyon cells and 5 MBONs
+kc_ids = sample_neuron_ids(ann, cell_class="Kenyon_Cell", cell_type="KCg-m", n=10)
+mbon_ids = sample_neuron_ids(ann, cell_class="MBON", n=5)
+
+# Load their skeletons
+neurons = load_skeletons(kc_ids + mbon_ids)
+
+# Build metadata for coloring
+meta = {}
+for rid in kc_ids:
+    meta[rid] = {"class": "Kenyon_Cell", "type": "KCg-m"}
+for rid in mbon_ids:
+    meta[rid] = {"class": "MBON", "type": "MBON"}
+
+# Render
+fig = render_neuropil_detail("mushroom_body", neurons=neurons, neuron_meta=meta)
+fig.write_html("mb_with_neurons.html")
+#+end_example
+
+* Exercises for the Reader
+
+1. *Central complex atlas*: render the central complex (EB, FB, PB, NO)
+   with 20 CX neurons.  Compare the morphologies to the mushroom body.
+
+2. *Optic lobe*: the medulla alone has more neurons than all other neuropils
+   combined.  Sample 50 ME neurons and render them in the optic lobe meshes.
+   What structure do you see?
+
+3. *Bilateral comparison*: load the same cell type from both hemispheres.
+   Do the morphologies look symmetric?
+
+4. *Connectivity bridges*: sample projection neurons that span two neuropils
+   (e.g., AL→LH olfactory projection neurons).  Render both neuropils with
+   the PNs to see how information flows between regions.
+
+5. *Scale challenge*: how many neurons can you render before the HTML file
+   becomes too large for your browser?  What strategies could reduce file
+   size?  (Hint: downsample skeletons, simplify meshes, WebGL instancing.)
+
+* Requirements for Agents                                        :noexport:
+  #+begin_src yaml :tangle no
+  lesson: 06-atlas
+  files_created:
+    - bravli/atlas/__init__.py
+    - bravli/atlas/neuropils.py
+    - bravli/atlas/skeletons.py
+    - bravli/atlas/render.py
+    - tests/test_atlas.py
+  data_required:
+    - fafbseg package (bundled PLY meshes, no auth)
+    - data/zenodo/sk_lod1_783_healed_ds2.parquet (optional, for skeletons)
+  dependencies:
+    - fafbseg >= 3.0
+    - navis >= 1.0
+    - plotly >= 5.0
+  verification:
+    - pytest tests/test_atlas.py -v
+    - python -c "from bravli.atlas import list_neuropils; print(len(list_neuropils()))"
+  next_lesson: 07-connectivity (Phase 2, requires CAVE auth)
+  #+end_src
+
+* Local Variables                                                :noexport:
+  # Local Variables:
+  # org-confirm-babel-evaluate: nil
+  # End:

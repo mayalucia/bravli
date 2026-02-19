@@ -1,0 +1,875 @@
+#+title: Lesson 01 — Parcellation
+#+subtitle: The fly brain's geography: neuropils, hierarchies, and how to navigate them
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+A brain atlas begins with a map. Before we can count neurons, classify cell types,
+or trace connections, we need to know /where/ we are. In the mouse brain (AIBS Common
+Coordinate Framework), this map is a voxelized 3D volume where every voxel carries a
+region ID. In the fly brain, the map is different: the FlyWire connectome parcellates
+the brain into 78 /neuropils/ — spatially contiguous regions of dense synaptic
+connectivity, each with a name and a function.
+
+The mouse atlas uses a deep hierarchy: root → basic cell groups → cerebrum → cerebral
+cortex → isocortex → ... → individual cortical layers. The fly brain's hierarchy is
+shallower but equally important: the brain divides into the /central brain/ and the
+/optic lobes/, each containing dozens of neuropils. Some neuropils group naturally —
+the mushroom body's lobes, the central complex's compartments, the antennal lobe's
+glomeruli.
+
+This lesson builds a =NeuropilRegion= tree (inheriting the recursive dataclass pattern
+from BBP's =BrainRegion=) and a =FlyBrainParcellation= that loads the FlyWire
+annotation data to produce a navigable, queryable model of the fly brain's geography.
+
+A key difference from the BBP atlas: we do not have a voxel annotation volume. Each
+neuron in FlyWire is /assigned/ to neuropils based on where its synapses fall (a
+neuron can span multiple neuropils). The parcellation is therefore a /table/ mapping
+neurons to neuropils, not a 3D mask. This changes how =mask= and =parcellate= work,
+but the conceptual framework — a hierarchy of named regions you can query — remains
+the same.
+
+** Learning Objectives
+
+- [ ] Understand the fly brain's neuropil organization
+- [ ] Build a recursive =NeuropilRegion= tree from a flat list of regions
+- [ ] Load FlyWire annotation data into a =FlyBrainParcellation=
+- [ ] Query the parcellation: list regions, get neuron counts, navigate the hierarchy
+- [ ] Understand the difference between voxel-based and table-based parcellations
+
+** File Map
+
+| File                                  | Role                                       |
+|---------------------------------------+--------------------------------------------|
+| =bravli/parcellation/__init__.py=     | Subpackage exports                         |
+| =bravli/parcellation/parcellation.py= | NeuropilRegion tree + FlyBrainParcellation  |
+| =bravli/parcellation/load_flywire.py= | Load FlyWire TSV, build neuropil hierarchy  |
+| =tests/test_parcellation.py=          | Parcellation creation, querying, hierarchy  |
+
+* Architecture
+
+#+begin_example
+                   FlyWire Annotation TSV
+                   (root_id, super_class, cell_class,
+                    cell_type, top_nt, ...)
+                          │
+                          ▼
+              ┌─── load_flywire.py ───┐
+              │  parse TSV             │
+              │  extract neuropils     │
+              │  build hierarchy       │
+              └───────────┬───────────┘
+                          │
+                          ▼
+              ┌── FlyBrainParcellation ──┐
+              │  .root: NeuropilRegion    │
+              │  .regions: pd.Series      │
+              │  .annotations: DataFrame  │
+              │  .neurons_in(neuropil)     │
+              │  .neuropils → list         │
+              └──────────────────────────┘
+#+end_example
+
+The region hierarchy:
+
+#+begin_example
+  root (whole brain)
+  ├── central_brain
+  │   ├── MB  (mushroom body)
+  │   │   ├── MB_CA_R    (calyx, right)
+  │   │   ├── MB_PED_R   (pedunculus, right)
+  │   │   ├── MB_VL_R    (vertical lobe, right)
+  │   │   ├── ...
+  │   ├── AL_R  (antennal lobe, right)
+  │   ├── LH_R  (lateral horn, right)
+  │   ├── CX    (central complex group)
+  │   │   ├── FB   (fan-shaped body)
+  │   │   ├── EB   (ellipsoid body)
+  │   │   ├── PB   (protocerebral bridge)
+  │   │   ├── NO   (noduli)
+  │   ├── ... (many more)
+  └── optic_lobe
+      ├── ME_R  (medulla, right)
+      ├── LO_R  (lobula, right)
+      ├── LOP_R (lobula plate, right)
+      ├── LA_R  (lamina, right)
+      └── ...
+#+end_example
+
+We build this hierarchy from the neuropil names themselves — the naming convention
+encodes the grouping (e.g., all =MB_*= neuropils belong to the mushroom body).
+
+* Implementation
+
+** Parcellation subpackage init
+
+#+begin_src python :tangle ../bravli/parcellation/__init__.py
+"""parcellation — Neuropil region hierarchy and FlyWire data loading.
+
+The fly brain is divided into ~78 neuropils. This module provides:
+  - NeuropilRegion: a recursive tree node for the region hierarchy
+  - FlyBrainParcellation: the top-level parcellation object
+  - load_flywire_annotations: load the public FlyWire annotation TSV
+"""
+
+from .parcellation import NeuropilRegion, FlyBrainParcellation
+from .load_flywire import load_flywire_annotations, build_neuropil_hierarchy
+#+end_src
+
+** NeuropilRegion and FlyBrainParcellation
+
+The =NeuropilRegion= is a simplified descendant of BBP's =BrainRegion=. Both are
+recursive dataclass trees where each node holds its children as a =pd.Series= of
+sub-regions. The simplification: we drop voxel-specific fields (=atlas_id=,
+=graph_order=, =color_hex_triplet=, etc.) and the =AnnotationVolume= concept entirely.
+What remains is the pure tree.
+
+=FlyBrainParcellation= is the top-level object. It holds:
+- The region tree (=.root=)
+- The raw annotation DataFrame (=.annotations=)
+- Convenience methods for querying neurons, neuropils, and cell types
+
+Notice that unlike BBP's =BrainParcellation=, there is no annotation volume and no
+=mask(region)= that returns a 3D boolean array. Instead, =neurons_in(neuropil)=
+returns the subset of the annotation table for that neuropil. The concept is the same
+— "give me everything in this region" — but the representation is tabular, not
+volumetric.
+
+#+begin_src python :tangle ../bravli/parcellation/parcellation.py
+"""Neuropil region hierarchy and fly brain parcellation.
+
+Heritage: the recursive NeuropilRegion tree descends from BrainRegion
+in explore_bba/build/parcellate/parcellate.py (Blue Brain Project).
+Adapted for the fly brain: no voxel volumes, table-based parcellation.
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, List
+from copy import deepcopy
+
+import numpy as np
+import pandas as pd
+
+from bravli.bench.dataset import evaluate_datasets
+from bravli.utils import get_logger
+
+LOG = get_logger("parcellation")
+
+
+# ---------------------------------------------------------------------------
+# NeuropilRegion — a node in the region hierarchy
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NeuropilRegion:
+    """A node representing a brain neuropil or a group of neuropils.
+
+    Parameters
+    ----------
+    name : str
+        Full name (e.g., "mushroom_body" or "MB_CA_R").
+    acronym : str
+        Short label, often the same as name for leaf neuropils.
+    children : list
+        Child regions. Each can be a dict (for recursive construction)
+        or a NeuropilRegion.
+    parent : NeuropilRegion, optional
+        Back-reference to parent (set during tree construction).
+    description : str, optional
+        What this region does / what it contains.
+    """
+
+    name: str
+    acronym: str
+    children: list = field(default_factory=list)
+    parent: Any = None
+    description: str = ""
+
+    def __post_init__(self):
+        """Recursively build child NeuropilRegion instances."""
+        raw_children = deepcopy(self.children)
+        self.children = pd.Series({
+            c["name"] if isinstance(c, dict) else c.name:
+                NeuropilRegion(**c, parent=self) if isinstance(c, dict)
+                else c
+            for c in raw_children
+        }) if raw_children else pd.Series(dtype=object)
+
+    @property
+    def is_leaf(self):
+        """True if this region has no children."""
+        return self.children.empty
+
+    def collect_hierarchy(self):
+        """Flatten the subtree rooted at this node into a pd.Series."""
+        me = pd.Series([self], index=[self.name])
+        if self.is_leaf:
+            return me
+        descendants = pd.concat([
+            child.collect_hierarchy() for child in self.children
+        ])
+        return pd.concat([me, descendants])
+
+    @property
+    def leaves(self):
+        """All leaf neuropil names in this subtree."""
+        if self.is_leaf:
+            return [self.name]
+        result = []
+        for child in self.children:
+            result.extend(child.leaves)
+        return result
+
+    @property
+    def hierarchy_path(self):
+        """Path from this node up to root, as a list of names."""
+        path = [self.name]
+        node = self.parent
+        while node is not None:
+            path.append(node.name)
+            node = node.parent
+        return list(reversed(path))
+
+    def find(self, name):
+        """Find a region by name in this subtree. Returns None if not found."""
+        if self.name == name or self.acronym == name:
+            return self
+        for child in self.children:
+            found = child.find(name)
+            if found is not None:
+                return found
+        return None
+
+    def __repr__(self):
+        n_children = len(self.children)
+        n_leaves = len(self.leaves)
+        return (f"NeuropilRegion('{self.name}', "
+                f"{n_children} children, {n_leaves} leaves)")
+
+
+# ---------------------------------------------------------------------------
+# FlyBrainParcellation — the top-level parcellation object
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FlyBrainParcellation:
+    """A parcellation of the fly brain into neuropils.
+
+    Combines a region hierarchy (tree of NeuropilRegion) with the neuron
+    annotation table. Provides methods to query neurons by neuropil,
+    list neuropils, and navigate the hierarchy.
+
+    Parameters
+    ----------
+    root : NeuropilRegion
+        Root of the region hierarchy tree.
+    annotations : pd.DataFrame
+        The FlyWire neuron annotation table. Expected columns include
+        at least 'root_id' and a neuropil-related column.
+    neuropil_column : str
+        Which column in annotations holds the primary neuropil assignment.
+        FlyWire annotations don't have a single 'neuropil' column — neurons
+        span multiple neuropils. We use 'super_class' for broad grouping
+        and provide neuropil queries via the supplementary neuropil data.
+    """
+
+    root: NeuropilRegion
+    annotations: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+    @property
+    def regions(self):
+        """All regions in the hierarchy as a flat pd.Series."""
+        return self.root.collect_hierarchy()
+
+    @property
+    def neuropil_names(self):
+        """Names of all leaf neuropils."""
+        return self.root.leaves
+
+    @property
+    def n_neurons(self):
+        """Total number of annotated neurons."""
+        return len(self.annotations)
+
+    def find(self, name):
+        """Find a region by name. Raises KeyError if not found."""
+        region = self.root.find(name)
+        if region is None:
+            raise KeyError(f"Region '{name}' not found in parcellation")
+        return region
+
+    def neurons_in_class(self, super_class):
+        """Return annotations for neurons of a given super_class.
+
+        Parameters
+        ----------
+        super_class : str
+            One of the super_class values (e.g., 'central', 'optic',
+            'sensory', 'ascending', 'descending', 'motor', 'endocrine',
+            'visual_projection', 'visual_centrifugal').
+
+        Returns
+        -------
+        pd.DataFrame
+            Subset of annotations matching the super_class.
+        """
+        if "super_class" not in self.annotations.columns:
+            raise ValueError("Annotations lack 'super_class' column")
+        return self.annotations[
+            self.annotations["super_class"] == super_class
+        ]
+
+    def neurons_of_type(self, cell_type):
+        """Return annotations for a specific cell type."""
+        if "cell_type" not in self.annotations.columns:
+            raise ValueError("Annotations lack 'cell_type' column")
+        return self.annotations[
+            self.annotations["cell_type"] == cell_type
+        ]
+
+    def cell_type_counts(self):
+        """Count neurons per cell_type across the whole brain."""
+        if "cell_type" not in self.annotations.columns:
+            raise ValueError("Annotations lack 'cell_type' column")
+        return (self.annotations
+                .groupby("cell_type")
+                .size()
+                .sort_values(ascending=False)
+                .rename("neuron_count"))
+
+    def super_class_counts(self):
+        """Count neurons per super_class."""
+        if "super_class" not in self.annotations.columns:
+            raise ValueError("Annotations lack 'super_class' column")
+        return (self.annotations
+                .groupby("super_class")
+                .size()
+                .sort_values(ascending=False)
+                .rename("neuron_count"))
+
+    def neurotransmitter_profile(self):
+        """Count neurons by predicted neurotransmitter type."""
+        if "top_nt" not in self.annotations.columns:
+            raise ValueError("Annotations lack 'top_nt' column")
+        return (self.annotations
+                .groupby("top_nt")
+                .size()
+                .sort_values(ascending=False)
+                .rename("neuron_count"))
+
+    def summary(self):
+        """Print a brief summary of the parcellation."""
+        lines = [
+            f"FlyBrainParcellation",
+            f"  Regions:   {len(self.regions)} ({len(self.neuropil_names)} leaves)",
+            f"  Neurons:   {self.n_neurons:,}",
+        ]
+        if "super_class" in self.annotations.columns:
+            sc = self.super_class_counts()
+            lines.append(f"  Super-classes: {len(sc)}")
+            for cls, n in sc.head(5).items():
+                lines.append(f"    {cls}: {n:,}")
+        if "top_nt" in self.annotations.columns:
+            nt = self.neurotransmitter_profile()
+            lines.append(f"  Neurotransmitters: {len(nt)}")
+            for nt_name, n in nt.head(5).items():
+                lines.append(f"    {nt_name}: {n:,}")
+        return "\n".join(lines)
+
+    def __repr__(self):
+        return (f"FlyBrainParcellation("
+                f"{len(self.neuropil_names)} neuropils, "
+                f"{self.n_neurons:,} neurons)")
+#+end_src
+
+** Loading FlyWire annotations
+
+The FlyWire annotation data is available as a TSV file from the =flywire_annotations=
+GitHub repository. This file contains one row per neuron with columns for root_id,
+coordinates, cell type classification, neurotransmitter prediction, and more.
+
+We don't need authentication to use this file — it's a static snapshot published with
+the Nature 2024 paper. This is our entry point: no API keys, no cloud services, just a
+table on disc.
+
+The neuropil hierarchy is not explicitly provided as a separate file. Instead, we
+/derive/ it from the annotation data itself. The =super_class= column gives the broadest
+grouping (central, optic, sensory, etc.). The =cell_class= column gives finer grouping
+within each super_class. We build a three-level tree: root → super_class → cell_class.
+
+For neuropil-specific data (which neuropil each neuron's synapses fall in), we would
+need the CAVE API or the supplementary connectivity tables. That comes in Phase 2.
+For now, the annotation TSV gives us enough to build the full cell type picture.
+
+#+begin_src python :tangle ../bravli/parcellation/load_flywire.py
+"""Load FlyWire annotation data and build the neuropil hierarchy.
+
+Data source: flywire_annotations GitHub repository
+  Supplemental_file1_neuron_annotations.tsv
+
+This file is a static snapshot from the FlyWire 783 release,
+published with Schlegel et al., Nature 2024. No authentication required.
+"""
+
+from pathlib import Path
+
+import pandas as pd
+
+from bravli.parcellation.parcellation import NeuropilRegion, FlyBrainParcellation
+from bravli.utils import get_logger
+
+LOG = get_logger("load_flywire")
+
+
+# ---------------------------------------------------------------------------
+# Neuropil hierarchy from annotations
+# ---------------------------------------------------------------------------
+
+# Known groupings of FlyWire super_classes into broad anatomical divisions.
+# This is our minimal hierarchy until we integrate the full neuropil meshes.
+
+ANATOMICAL_DIVISIONS = {
+    "central_brain": {
+        "description": "Central brain neuropils",
+        "super_classes": ["central"],
+    },
+    "optic_lobe": {
+        "description": "Optic lobe neuropils",
+        "super_classes": ["optic"],
+    },
+    "sensory": {
+        "description": "Sensory neurons",
+        "super_classes": ["sensory"],
+    },
+    "motor_and_descending": {
+        "description": "Motor, descending, and ascending neurons",
+        "super_classes": ["ascending", "descending", "motor"],
+    },
+    "neuroendocrine": {
+        "description": "Endocrine neurons",
+        "super_classes": ["endocrine"],
+    },
+    "visual_projection": {
+        "description": "Visual projection and centrifugal neurons",
+        "super_classes": ["visual_projection", "visual_centrifugal"],
+    },
+}
+
+
+def build_neuropil_hierarchy(annotations):
+    """Build a NeuropilRegion tree from the annotation DataFrame.
+
+    The tree has three levels:
+      root → anatomical division → cell_class (within each super_class)
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        The FlyWire neuron annotation table with 'super_class' and
+        'cell_class' columns.
+
+    Returns
+    -------
+    NeuropilRegion
+        Root of the hierarchy tree.
+    """
+    children = []
+
+    for division_name, info in ANATOMICAL_DIVISIONS.items():
+        super_classes = info["super_classes"]
+        mask = annotations["super_class"].isin(super_classes)
+        subset = annotations[mask]
+
+        if subset.empty:
+            continue
+
+        # Build cell_class children within this division
+        class_children = []
+        if "cell_class" in annotations.columns:
+            for cell_class in sorted(subset["cell_class"].dropna().unique()):
+                class_children.append({
+                    "name": cell_class,
+                    "acronym": cell_class,
+                    "description": f"Cell class '{cell_class}' in {division_name}",
+                })
+
+        children.append({
+            "name": division_name,
+            "acronym": division_name[:3].upper(),
+            "description": info["description"],
+            "children": class_children,
+        })
+
+    root = NeuropilRegion(
+        name="fly_brain",
+        acronym="FB",
+        description="Drosophila melanogaster whole brain (FlyWire 783)",
+        children=children,
+    )
+
+    LOG.info("Built neuropil hierarchy: %d divisions, %d total regions",
+             len(children), len(root.collect_hierarchy()))
+    return root
+
+
+# ---------------------------------------------------------------------------
+# Load the annotation TSV
+# ---------------------------------------------------------------------------
+
+# Columns we actually use (the full TSV has many more)
+_CORE_COLUMNS = [
+    "root_id",
+    "super_class",
+    "cell_class",
+    "cell_sub_class",
+    "cell_type",
+    "hemibrain_type",
+    "top_nt",
+    "top_nt_conf",
+    "side",
+    "flow",
+]
+
+
+def load_flywire_annotations(path, columns=None):
+    """Load the FlyWire neuron annotation TSV.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to Supplemental_file1_neuron_annotations.tsv
+    columns : list of str, optional
+        Columns to load. If None, loads a curated subset of the most
+        useful columns (to save memory — the full file has 30+ columns).
+
+    Returns
+    -------
+    pd.DataFrame
+        Neuron annotations indexed by root_id.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Annotation file not found: {path}\n"
+            "Download from: https://github.com/flyconnectome/flywire_annotations"
+        )
+
+    LOG.info("Loading FlyWire annotations from %s", path)
+
+    # Determine which columns to load
+    use_columns = columns or _CORE_COLUMNS
+
+    # Read only the columns we need (if they exist in the file)
+    all_columns = pd.read_csv(path, sep="\t", nrows=0).columns.tolist()
+    valid_columns = [c for c in use_columns if c in all_columns]
+
+    if not valid_columns:
+        LOG.warning("None of the requested columns found. Loading all columns.")
+        df = pd.read_csv(path, sep="\t", low_memory=False)
+    else:
+        df = pd.read_csv(path, sep="\t", usecols=valid_columns, low_memory=False)
+
+    LOG.info("Loaded %d neurons with columns: %s",
+             len(df), ", ".join(df.columns.tolist()))
+
+    return df
+
+
+def load_parcellation(annotation_path):
+    """One-shot: load annotations and build a FlyBrainParcellation.
+
+    Parameters
+    ----------
+    annotation_path : str or Path
+        Path to the FlyWire annotation TSV.
+
+    Returns
+    -------
+    FlyBrainParcellation
+        Ready-to-use parcellation with annotations and hierarchy.
+    """
+    annotations = load_flywire_annotations(annotation_path)
+    root = build_neuropil_hierarchy(annotations)
+    parcellation = FlyBrainParcellation(root=root, annotations=annotations)
+    LOG.info("Created %r", parcellation)
+    return parcellation
+#+end_src
+
+** Tests
+
+We test three things: that the hierarchy builds correctly from sample data, that
+=FlyBrainParcellation= queries work, and that the loader handles missing files
+gracefully.
+
+#+begin_src python :tangle ../tests/test_parcellation.py
+"""Tests for parcellation: NeuropilRegion tree and FlyBrainParcellation."""
+
+import pandas as pd
+import pytest
+
+from bravli.parcellation.parcellation import NeuropilRegion, FlyBrainParcellation
+from bravli.parcellation.load_flywire import build_neuropil_hierarchy
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: synthetic annotation data
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sample_annotations():
+    """A small synthetic annotation DataFrame mimicking FlyWire format."""
+    return pd.DataFrame({
+        "root_id": range(1, 21),
+        "super_class": (
+            ["central"] * 8 +
+            ["optic"] * 6 +
+            ["sensory"] * 3 +
+            ["descending"] * 2 +
+            ["endocrine"] * 1
+        ),
+        "cell_class": (
+            ["MBIN", "MBIN", "KC", "KC", "KC", "MBON", "MBON", "CX"] +
+            ["Mi", "Mi", "Tm", "Tm", "T4", "T5"] +
+            ["ORN", "ORN", "ORN"] +
+            ["DN", "DN"] +
+            ["NS"]
+        ),
+        "cell_sub_class": [""] * 20,
+        "cell_type": (
+            ["MBIN_a", "MBIN_b", "KC_a", "KC_a", "KC_b",
+             "MBON_a", "MBON_a", "PFN"] +
+            ["Mi1", "Mi1", "Tm1", "Tm2", "T4a", "T5a"] +
+            ["ORN_a", "ORN_a", "ORN_b"] +
+            ["DN_a", "DN_b"] +
+            ["NS_a"]
+        ),
+        "top_nt": (
+            ["acetylcholine"] * 5 +
+            ["glutamate"] * 2 +
+            ["GABA"] * 1 +
+            ["acetylcholine"] * 4 +
+            ["GABA"] * 2 +
+            ["acetylcholine"] * 3 +
+            ["acetylcholine"] * 2 +
+            ["unknown"] * 1
+        ),
+        "top_nt_conf": [0.9] * 20,
+        "side": ["right"] * 10 + ["left"] * 10,
+        "flow": ["intrinsic"] * 14 + ["sensory"] * 3 + ["efferent"] * 3,
+    })
+
+
+@pytest.fixture
+def sample_parcellation(sample_annotations):
+    """A FlyBrainParcellation built from sample data."""
+    root = build_neuropil_hierarchy(sample_annotations)
+    return FlyBrainParcellation(root=root, annotations=sample_annotations)
+
+
+# ---------------------------------------------------------------------------
+# NeuropilRegion tree
+# ---------------------------------------------------------------------------
+
+class TestNeuropilRegion:
+
+    def test_leaf_node(self):
+        leaf = NeuropilRegion(name="MB_CA_R", acronym="MB_CA_R")
+        assert leaf.is_leaf
+        assert leaf.leaves == ["MB_CA_R"]
+
+    def test_tree_construction(self):
+        root = NeuropilRegion(
+            name="brain",
+            acronym="BR",
+            children=[
+                {"name": "central", "acronym": "CB", "children": [
+                    {"name": "MB", "acronym": "MB"},
+                    {"name": "AL", "acronym": "AL"},
+                ]},
+                {"name": "optic", "acronym": "OL", "children": [
+                    {"name": "ME", "acronym": "ME"},
+                ]},
+            ],
+        )
+        assert not root.is_leaf
+        assert len(root.children) == 2
+        assert set(root.leaves) == {"MB", "AL", "ME"}
+
+    def test_find(self):
+        root = NeuropilRegion(
+            name="brain", acronym="BR",
+            children=[
+                {"name": "central", "acronym": "CB", "children": [
+                    {"name": "MB", "acronym": "MB"},
+                ]},
+            ],
+        )
+        assert root.find("MB") is not None
+        assert root.find("MB").name == "MB"
+        assert root.find("nonexistent") is None
+
+    def test_hierarchy_path(self):
+        root = NeuropilRegion(
+            name="brain", acronym="BR",
+            children=[
+                {"name": "central", "acronym": "CB", "children": [
+                    {"name": "MB", "acronym": "MB"},
+                ]},
+            ],
+        )
+        mb = root.find("MB")
+        assert mb.hierarchy_path == ["brain", "central", "MB"]
+
+    def test_collect_hierarchy(self):
+        root = NeuropilRegion(
+            name="brain", acronym="BR",
+            children=[
+                {"name": "A", "acronym": "A"},
+                {"name": "B", "acronym": "B", "children": [
+                    {"name": "B1", "acronym": "B1"},
+                ]},
+            ],
+        )
+        flat = root.collect_hierarchy()
+        assert "brain" in flat.index
+        assert "B1" in flat.index
+        assert len(flat) == 4  # brain, A, B, B1
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy from annotations
+# ---------------------------------------------------------------------------
+
+class TestBuildHierarchy:
+
+    def test_builds_from_annotations(self, sample_annotations):
+        root = build_neuropil_hierarchy(sample_annotations)
+        assert root.name == "fly_brain"
+        assert not root.is_leaf
+        # Should have divisions for: central_brain, optic_lobe, sensory,
+        # motor_and_descending, neuroendocrine
+        assert len(root.children) >= 4
+
+    def test_central_brain_has_cell_classes(self, sample_annotations):
+        root = build_neuropil_hierarchy(sample_annotations)
+        cb = root.find("central_brain")
+        assert cb is not None
+        # Should contain cell classes: MBIN, KC, MBON, CX
+        leaves = cb.leaves
+        assert "KC" in leaves
+        assert "MBON" in leaves
+
+
+# ---------------------------------------------------------------------------
+# FlyBrainParcellation
+# ---------------------------------------------------------------------------
+
+class TestFlyBrainParcellation:
+
+    def test_n_neurons(self, sample_parcellation):
+        assert sample_parcellation.n_neurons == 20
+
+    def test_neuropil_names(self, sample_parcellation):
+        names = sample_parcellation.neuropil_names
+        assert len(names) > 0
+        assert "KC" in names
+
+    def test_super_class_counts(self, sample_parcellation):
+        counts = sample_parcellation.super_class_counts()
+        assert counts["central"] == 8
+        assert counts["optic"] == 6
+
+    def test_cell_type_counts(self, sample_parcellation):
+        counts = sample_parcellation.cell_type_counts()
+        assert counts["KC_a"] == 2
+
+    def test_neurotransmitter_profile(self, sample_parcellation):
+        nt = sample_parcellation.neurotransmitter_profile()
+        assert "acetylcholine" in nt.index
+        assert "GABA" in nt.index
+
+    def test_neurons_in_class(self, sample_parcellation):
+        central = sample_parcellation.neurons_in_class("central")
+        assert len(central) == 8
+
+    def test_neurons_of_type(self, sample_parcellation):
+        kc_a = sample_parcellation.neurons_of_type("KC_a")
+        assert len(kc_a) == 2
+
+    def test_find_raises_for_missing(self, sample_parcellation):
+        with pytest.raises(KeyError):
+            sample_parcellation.find("nonexistent_region")
+
+    def test_summary(self, sample_parcellation):
+        text = sample_parcellation.summary()
+        assert "FlyBrainParcellation" in text
+        assert "20" in text  # neuron count
+
+    def test_repr(self, sample_parcellation):
+        r = repr(sample_parcellation)
+        assert "neuropils" in r
+        assert "20" in r
+#+end_src
+
+* Key Design Decisions
+
+| Decision                                    | Rationale                                                                 |
+|---------------------------------------------+---------------------------------------------------------------------------|
+| Table-based parcellation, not voxel-based   | Fly brain data is per-neuron, not per-voxel. No 3D annotation volume.     |
+| Hierarchy derived from annotation data      | No separate hierarchy file available publicly. Names encode grouping.     |
+| Three-level tree: root → division → class   | Matches the data. Deeper levels (e.g., individual neuropils) need CAVE.   |
+| =super_class= as the primary grouping       | It's the most reliable column in the public TSV.                          |
+| No =mask(region)= method                    | No voxel volume to mask. Use =neurons_in_class= instead.                 |
+| Core columns only by default                | The full TSV has 30+ columns. Loading all wastes memory.                  |
+| =find()= returns None (region) / raises (parcellation) | Tree search is exploratory; parcellation queries are assertive. |
+
+* Testing
+
+#+begin_src bash :tangle no
+pytest tests/test_parcellation.py -v
+#+end_src
+
+All tests use synthetic data — no FlyWire download required. The real data integration
+is tested in Lesson 05 (Explore the Mushroom Body).
+
+* Exercises for the Reader
+
+1. *Deeper hierarchy*: The current tree has three levels. Can you build a four-level
+   tree by parsing the =cell_sub_class= column? What about using the =hemibrain_type=
+   to create a type-level under each cell_class?
+
+2. *Left-right symmetry*: The fly brain is bilaterally symmetric. Add a method to
+   =FlyBrainParcellation= that compares neuron counts between =side == "left"= and
+   =side == "right"=. Are they symmetric?
+
+3. *Neurotransmitter by division*: Write a function that produces a neurotransmitter
+   profile /per anatomical division/ (central brain vs optic lobe). Are the NT
+   distributions different?
+
+4. *Connect to FlyWire*: If you have a CAVE API token, try loading neuropil meshes
+   via =fafbseg.get_neuropil_volumes()=. How would you integrate those meshes into
+   the =FlyBrainParcellation=?
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 01-parcellation
+tag: lesson/01-parcellation
+files_created:
+  - bravli/parcellation/__init__.py
+  - bravli/parcellation/parcellation.py
+  - bravli/parcellation/load_flywire.py
+  - tests/test_parcellation.py
+verification:
+  - "python -c 'from bravli.parcellation import NeuropilRegion, FlyBrainParcellation' succeeds"
+  - "pytest tests/test_parcellation.py -v — all tests pass"
+next_lesson: 02-composition
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

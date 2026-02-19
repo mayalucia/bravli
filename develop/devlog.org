@@ -1,0 +1,164 @@
+#+title: bravli Development Log
+#+subtitle: Where we are, where we've been, where we're going
+#+startup: showall
+
+* Where We Are <2026-02-19 Wed>
+
+** The Project
+
+=bravli= (Brain Reconstruction Analysis and Validation Library) is a literate,
+LLM-assisted toolkit for exploring the /Drosophila/ whole-brain connectome.
+It inherits ideas from three sources:
+
+- *Blue Brain Project heritage* (~/work/bbp/work/): the =KnowledgeBench= dataset
+  abstraction, =BrainParcellation= domain model, =Factology= structured
+  measurement system, and the sparse-to-dense atlas pipeline methodology.
+
+- *MayaDevGenI philosophy*: understanding through creation, literate programming
+  as single source of truth, dual human-machine audience.
+
+- *FlyWire connectome* (2024): 139,255 neurons, 54.5M synapses, 8,453 cell types,
+  neurotransmitter predictions, all publicly available. The complete wiring
+  diagram of an adult fly brain that runs on a laptop.
+
+The key insight: for the fly brain, BBP's pipeline is /inverted/. Where BBP
+spent years building anatomy from sparse data (stages 1-7), for Drosophila
+the anatomy is given. The frontier is understanding, simulation, and
+exploration.
+
+** What Exists
+
+*** Code (Python package: =bravli/=)
+| Module            | Status | What it does                                      |
+|-------------------+--------+---------------------------------------------------|
+| =bench/=          | Done   | Dataset loading, validation, =@evaluate_datasets= |
+| =parcellation/=   | Done   | Neuropil parcellation, FlyWire loader              |
+| =composition/=    | Done   | Cell type composition per neuropil                 |
+| =factology/=      | Done   | Structured facts (=Fact=, =Factology= ABC)        |
+| =viz/=            | Done   | 3D visualization (navis + plotly)                  |
+| =explore/=        | Done   | Mushroom body deep dive                            |
+| =atlas/=          | Done   | Neuropil meshes + skeleton rendering               |
+| =connectivity/=   | Planned | Synapse-level connectivity analysis               |
+| =physiology/=     | Planned | NT-based synaptic parameters                      |
+| =models/=         | Planned | Cell electrical models (LIF, graded)              |
+| =simulation/=     | Planned | Whole-brain circuit simulation                    |
+
+*** Literate Source (=codev/=)
+Each lesson is an Org file that teaches the science /and/ specifies the code.
+Source files are tangled from these.
+
+| Lesson | File                          | Topic                                    |
+|--------+-------------------------------+------------------------------------------|
+|     00 | =00-foundations.org=          | Datasets, logging, benchmarks            |
+|     01 | =01-parcellation.org=         | 78 neuropils from FlyWire                |
+|     02 | =02-composition.org=          | Cell type counts per neuropil            |
+|     03 | =03-factology.org=            | Structured measurement framework         |
+|     04 | =04-visualization.org=        | 3D viz with navis + plotly               |
+|     05 | =05-explore-mushroom-body.org= | MB deep dive: KCs, MBONs, DANs         |
+|     06 | =06-atlas.org=                | Neuropil meshes + skeleton morphologies  |
+|     07 | =07-plan-fly-brain-2026.org=  | Roadmap: BBP pipeline mapped to fly      |
+
+*** Data (=data/=, not committed)
+| Asset                                      | Size  | Auth needed? |
+|--------------------------------------------+-------+--------------|
+| =flywire_annotations/= (139K neuron TSV)   | 32 MB | No           |
+| =zenodo/sk_lod1_783_healed_ds2.parquet=    | 5.1 GB | No          |
+| Neuropil meshes (78 PLY, via =fafbseg=)    | ~1 MB | No (bundled) |
+
+*** Outputs (=output/=, not committed)
+10 interactive 3D HTML visualizations (~100 MB total), including:
+- =whole_brain_atlas_78_neuropils.html= --- all 78 neuropil meshes
+- =mb_skeletons_in_atlas.html= --- 55 neuron skeletons inside MB compartments
+- =whole_brain_atlas_with_neurons.html= --- full atlas + neuron morphologies
+
+*** Tests (=tests/=)
+7 test files covering all modules. Tests that require the Zenodo parquet or
+=fafbseg= are conditionally skipped.
+
+** Origin Story
+
+This project grew from an overnight session (2026-02-18/19) exploring the
+unfinished =ExploreBlueBrainAtlas= repo (=~/work/bbp/work/MMB/atlas/BBA/=).
+That repo contained:
+
+1. A =KnowledgeBench= --- filesystem-backed dataset registry with typed
+   datasets, lazy evaluation, and NEXUS integration
+2. A =BrainParcellation= --- recursive domain model for AIBS ontology +
+   annotation volumes
+3. Reverse-engineered BBP atlas pipeline documentation
+4. Composition engine wrapping =atlas-densities=
+5. CCFv2/v3 transplant logic
+
+The conclusion: the scientific logic is timeless, but the BBP infrastructure
+(NEXUS, GPFS, Slurm) is dead. The fly brain provides the same intellectual
+challenge with none of the infrastructure burden.
+
+Transcripts of the session are at:
+- =~/work/bbp/work/MMB/atlas/BBA/ExploreBlueBrainAtlas/.agent-shell/transcripts/2026-02-18-20-34-35.md=
+
+** Roadmap (from =codev/07-plan-fly-brain-2026.org=)
+
+| Phase | Description               | Status  | Key deliverable                        |
+|-------+---------------------------+---------+----------------------------------------|
+|     0 | Foundation (lessons 00-06) | Done    | 3D atlas, factsheets, tests            |
+|     1 | Connectivity analysis      | Next    | Neuropil connectivity matrix           |
+|     2 | Synaptic physiology        | Planned | NT-based synapse parameter database    |
+|     3 | Cell electrical models     | Planned | LIF/graded models per cell type class  |
+|     4 | Circuit simulation         | Planned | Whole-brain LIF on laptop              |
+|     5 | Digital twin portal        | Planned | Interactive exploration tool            |
+|     6 | WebGPU visualization       | Future  | MayaPortal integration                 |
+
+** Immediate Next Steps
+
+1. [X] Initialize git repo, make initial commit
+2. [ ] Write =codev/08-connectivity.org= --- synapse table loading, neuropil
+   connectivity matrix, pathway analysis
+3. [ ] Acquire synapse data (Codex download or CAVE API)
+4. [ ] Build =bravli/connectivity/= module
+
+** Dependencies
+
+#+begin_src text
+Python 3.12
+Core:     numpy, pandas, pyyaml, matplotlib
+FlyWire:  navis >= 1.0, fafbseg >= 3.0
+Viz:      plotly >= 5.0
+Future:   brian2 (simulation), networkx/graph-tool (connectivity)
+#+end_src
+
+** How to Run
+
+#+begin_src bash
+cd ~/Darshan/research/develop/agentic/mayalucia/bravli/code/bravli
+pip install -e ".[all]"
+pytest tests/ -v
+#+end_src
+
+** Relationship to MayaLucIA
+
+=bravli= lives under =mayalucia/bravli/code/bravli/= but is being initialized
+as its own git repository. It is the neuroscience arm of MayaLucIA --- the
+concrete domain (fly brain) where the Measure-Model-Manifest-Evaluate cycle
+is applied. MayaPortal will eventually provide the rendering backend.
+
+* Log
+
+** <2026-02-18 Tue> Session: BBA archaeology + fly brain pivot
+- Explored =ExploreBlueBrainAtlas= repo, identified reusable assets
+- Discussed with Claude Code: three options (library, docs, dataset abstraction)
+- Pivoted to fly brain --- complete FlyWire connectome, no infra needed
+- Drafted Phase 1 plan for =bravli=
+- Downloaded FlyWire annotations, Zenodo skeletons (5.1 GB)
+- Built 10 interactive 3D visualizations
+- Wrote lessons 00-07 in =codev/=
+- All code tangled, tests passing
+
+** <2026-02-19 Wed> Repository initialization
+- Created =develop/devlog.org= (this file)
+- Initialized git repository
+- Initial commit: Phase 0 complete
+
+* Local variables :noexport:
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

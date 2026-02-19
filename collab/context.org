@@ -1,0 +1,45 @@
+#+title: bravli — Project Context
+#+author: bravli Collaboration
+
+* What is bravli?
+
+bravli (Brain Reconstruction Analysis and Validation Library) is a personal,
+LLM-assisted toolkit for exploring the /Drosophila/ whole-brain connectome.
+
+It inherits the scientific logic of the Blue Brain Project's cell atlas pipeline
+and circuit analysis tools, stripped of institutional infrastructure (NEXUS, GPFS,
+Slurm), and rewired to work with publicly available FlyWire connectome data.
+
+* Heritage
+
+Three bodies of prior work feed into this project:
+
+1. *ExploreBlueBrainAtlas* (~explore_bba~) — KnowledgeBench dataset management,
+   BrainParcellation domain model, cell density composition engine
+2. *bravlibpy* — Circuit analysis, the Dataset abstraction with ~@evaluate_datasets~
+3. *circuit-factology* — The Fact/Factology measurement pattern
+
+* Data source
+
+The FlyWire whole-brain connectome (Dorkenwald et al., Nature 2024):
+- 139,255 neurons, 50M+ synapses, 8,453 cell types
+- 78 neuropil regions
+- Publicly available annotation tables (no auth required for TSV files)
+- Programmatic access via ~fafbseg-py~ and ~navis~
+
+* Development methodology
+
+- *Literate programming*: ~codev/*.org~ files are the single source of truth
+- *MayaDevGenI* agency framework: human-led, artifact-centric, role-bounded
+- *Measure-Model-Manifest-Evaluate* cycle from MayaLucIA
+
+* Architecture (planned)
+
+#+begin_example
+  codev/00-foundations.org  ──tangle──▶  bravli/bench/dataset.py
+  codev/01-parcellation.org ──tangle──▶  bravli/parcellation/*.py
+  codev/02-composition.org  ──tangle──▶  bravli/composition/*.py
+  codev/03-factology.org    ──tangle──▶  bravli/factology/*.py
+  codev/04-visualization.org──tangle──▶  bravli/viz/*.py
+  codev/05-explore-mb.org   ──tangle──▶  notebooks/
+#+end_example

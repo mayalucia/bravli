@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bravli"
+version = "0.1.0"
+description = "Brain Reconstruction Analysis and Validation Library — Fly brain edition"
+readme = "README.md"
+license = {text = "LGPL-3.0-or-later"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Vishal Sood"},
+]
+keywords = [
+    "computational neuroscience",
+    "connectomics",
+    "Drosophila",
+    "fly brain",
+    "FlyWire",
+    "brain atlas",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyyaml>=6.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+flywire = [
+    "navis>=1.0",
+    "fafbseg>=3.0",
+]
+viz = [
+    "navis>=1.0",
+    "plotly>=5.0",
+]
+all = [
+    "navis>=1.0",
+    "fafbseg>=3.0",
+    "plotly>=5.0",
+]
+dev = [
+    "pytest>=7.0",
+    "navis>=1.0",
+    "fafbseg>=3.0",
+    "plotly>=5.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["bravli*"]

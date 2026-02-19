@@ -1,0 +1,622 @@
+#+title: Lesson 05 — Explore the Mushroom Body
+#+subtitle: Integration: a complete factsheet and visualization of the fly's learning center
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+This is the culmination lesson.  Everything we built in Lessons 00–04 —
+datasets, parcellation, composition analysis, factology, and visualization —
+converges here on a single target: the /mushroom body/ (MB), the fly's center
+for olfactory learning and memory.
+
+Why the mushroom body?  Three reasons:
+
+1. *Biological significance*.  The MB is the best-understood associative
+   learning circuit in any organism.  Odor representations (via ~5,000 Kenyon
+   cells) are combined with reinforcement signals (via ~330 dopaminergic
+   neurons, DANs) to drive learned approach or avoidance (via ~100 mushroom
+   body output neurons, MBONs).  It is a microcosm of the entire brain's
+   strategy: sparse sensory encoding → associative plasticity → motor decision.
+
+2. *Data richness*.  FlyWire provides complete cell-type annotations for every
+   MB neuron: Kenyon cell subtypes (KCg-m, KCab, KCapbp), DAN subtypes (PAM,
+   PPL families), and MBON subtypes.  We can produce a meaningful factsheet
+   without any external data beyond the annotation TSV.
+
+3. *Validation*.  If our stack works end-to-end for the MB — load data,
+   parcellate, compose, fact-sheet, visualize — it will work for any neuropil.
+   The MB is our integration test.
+
+** Learning Objectives
+   - [ ] Understand the mushroom body's role in associative learning
+   - [ ] Extract MB neurons from the FlyWire annotations using bravli
+   - [ ] Produce a structured factsheet with ~NeuropilFacts~
+   - [ ] Analyze cell-type composition and neurotransmitter profiles
+   - [ ] Generate 3D visualizations of MB composition
+   - [ ] See the full bravli pipeline in action, end to end
+
+** File Map
+   | File                              | Role                            | Tangled from |
+   |-----------------------------------+---------------------------------+--------------|
+   | bravli/explore/mushroom_body.py   | MB exploration script           | this file    |
+   | tests/test_mushroom_body.py       | Integration tests on real data  | this file    |
+
+* Architecture
+
+The exploration script ties together all four preceding modules:
+
+#+begin_example
+  ┌─────────────────────────────────────────────────────┐
+  │               explore/mushroom_body.py               │
+  │                                                     │
+  │  1. load_parcellation()          [Lesson 01]        │
+  │  2. filter MB neurons            [pandas]           │
+  │  3. composition analysis         [Lesson 02]        │
+  │  4. NeuropilFacts.collect()      [Lesson 03]        │
+  │  5. show_neuropil_connectivity() [Lesson 04]        │
+  └──────────────────┬──────────────────────────────────┘
+                     │
+          ┌──────────┼──────────┐
+          ▼          ▼          ▼
+   annotations   factsheet   figures
+   (DataFrame)   (DataFrame)  (plotly)
+#+end_example
+
+This is /not/ a library module — it is an executable exploration.  It prints
+to stdout, produces DataFrames and figures, and serves as a template for
+exploring any neuropil.
+
+* The Mushroom Body — Biological Context
+
+Before we touch a single line of code, let us understand what we are looking at.
+
+The mushroom body receives olfactory input from ~150 projection neurons (PNs)
+arriving from the antennal lobe.  These PNs synapse onto Kenyon cells (KCs) in
+the MB calyx.  Each KC receives input from a random subset of PNs, creating a
+high-dimensional sparse code for odors — a strategy that maximizes
+discriminability (theoretical work by Caron et al. 2013, confirmed by FlyWire).
+
+There are three main KC subtypes, named for the MB lobes they project to:
+- *KCg* (~2,500): project to the γ lobe.  Involved in short-term memory.
+- *KCab* (~1,650): project to the α/β lobes.  Involved in long-term memory.
+- *KCapbp* (~900): project to the α'/β' lobes.  Intermediate memory.
+
+The lobes are compartmentalized, and each compartment receives modulatory
+input from a specific DAN and sends output through a specific MBON:
+
+#+begin_example
+   Odor → PN → KC → [compartment] ← DAN (reinforcement)
+                         │
+                         ▼
+                       MBON → motor / decision
+#+end_example
+
+The DANs carry reward/punishment signals (mostly dopaminergic, hence the name).
+The PAM cluster (~200 DANs) encodes reward; the PPL1 cluster (~12 DANs) encodes
+punishment.  MBONs read out the modified KC→MBON synaptic weights and drive
+approach or avoidance behavior.
+
+This circuit — PN→KC→MBON, modulated by DAN — is the most completely
+characterized learning circuit in biology.  And every neuron is in our dataset.
+
+* Implementation
+
+** bravli/explore/__init__.py
+
+#+begin_src python :tangle ../bravli/explore/__init__.py
+"""Exploration scripts demonstrating the full bravli pipeline."""
+#+end_src
+
+** bravli/explore/mushroom_body.py — the integration script
+
+This module provides functions that combine loading, filtering, composition
+analysis, and factology into a single coherent workflow for the mushroom body.
+Each function is independent and documented — an LLM or human can call any
+subset.
+
+#+begin_src python :tangle ../bravli/explore/mushroom_body.py
+"""Explore the mushroom body: bravli's integration demonstration.
+
+This script ties together all bravli modules (parcellation, composition,
+factology, visualization) to produce a comprehensive analysis of the
+fly brain's mushroom body — the center for olfactory learning and memory.
+
+Usage:
+    python -m bravli.explore.mushroom_body <path-to-annotations-tsv>
+
+Or import individual functions:
+    from bravli.explore.mushroom_body import explore_mushroom_body
+"""
+
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+
+from bravli.parcellation.load_flywire import load_flywire_annotations
+from bravli.composition.composition import (
+    cell_type_distribution,
+    neurotransmitter_profile,
+    top_types,
+)
+from bravli.factology.factology import NeuropilFacts
+from bravli.utils import get_logger
+
+LOG = get_logger("explore.mb")
+
+
+# ---------------------------------------------------------------------------
+# Constants: which cell_class values belong to the mushroom body circuit
+# ---------------------------------------------------------------------------
+
+MB_CELL_CLASSES = ["Kenyon_Cell", "MBON", "MBIN", "DAN"]
+"""Cell classes that form the mushroom body circuit.
+
+- Kenyon_Cell: ~5,200 intrinsic neurons forming the sparse odor code
+- MBON: ~100 mushroom body output neurons driving behavior
+- MBIN: mushroom body input neurons (non-DAN modulatory)
+- DAN: ~330 dopaminergic neurons carrying reinforcement signals
+"""
+
+KC_SUBTYPES = {
+    "gamma":       ["KCg-m", "KCg-d"],
+    "alpha_beta":  ["KCab", "KCab-p"],
+    "alpha_beta_prime": ["KCapbp-m", "KCapbp-ap1", "KCapbp-ap2"],
+}
+"""Kenyon cell subtype groupings by lobe projection."""
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Extract mushroom body neurons
+# ---------------------------------------------------------------------------
+
+def extract_mb_neurons(annotations):
+    """Filter annotations to mushroom body circuit neurons.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        Full FlyWire annotation table.
+
+    Returns
+    -------
+    pd.DataFrame
+        Subset containing only MB-related neurons.
+    """
+    mask = annotations["cell_class"].isin(MB_CELL_CLASSES)
+    mb = annotations[mask].copy()
+    LOG.info("Extracted %d MB neurons from %d total", len(mb), len(annotations))
+    return mb
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Composition analysis
+# ---------------------------------------------------------------------------
+
+def mb_composition(mb_neurons):
+    """Analyze the composition of the mushroom body.
+
+    Returns a dict with:
+    - class_counts: neuron count per cell_class
+    - kc_subtypes: count per KC subtype group
+    - nt_profile: neurotransmitter breakdown
+    - top_cell_types: top 20 most abundant cell types
+    - hemisphere_balance: left vs right counts
+
+    Parameters
+    ----------
+    mb_neurons : pd.DataFrame
+        MB-filtered annotations (from extract_mb_neurons).
+
+    Returns
+    -------
+    dict
+    """
+    result = {}
+
+    # Count by cell class
+    result["class_counts"] = (
+        mb_neurons["cell_class"]
+        .value_counts()
+        .to_dict()
+    )
+
+    # Kenyon cell subtype breakdown
+    kc = mb_neurons[mb_neurons["cell_class"] == "Kenyon_Cell"]
+    kc_groups = {}
+    for group_name, types in KC_SUBTYPES.items():
+        kc_groups[group_name] = kc["cell_type"].isin(types).sum()
+    kc_groups["other"] = len(kc) - sum(kc_groups.values())
+    result["kc_subtypes"] = kc_groups
+
+    # Neurotransmitter profile
+    result["nt_profile"] = neurotransmitter_profile(mb_neurons)
+
+    # Top cell types
+    result["top_cell_types"] = top_types(mb_neurons, n=20)
+
+    # Hemisphere balance
+    if "side" in mb_neurons.columns:
+        result["hemisphere_balance"] = (
+            mb_neurons["side"]
+            .value_counts()
+            .to_dict()
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Structured factsheet
+# ---------------------------------------------------------------------------
+
+def mb_factsheet(mb_neurons, target="mushroom_body"):
+    """Generate a structured factsheet for the mushroom body.
+
+    Uses the NeuropilFacts factology class from Lesson 03 to produce
+    typed, named facts in a standardized format.
+
+    Parameters
+    ----------
+    mb_neurons : pd.DataFrame
+        MB-filtered annotations.
+    target : str
+        Name for the factsheet target.
+
+    Returns
+    -------
+    pd.DataFrame
+        Factsheet with columns: name, value, unit, category.
+    """
+    facts = NeuropilFacts(annotations=mb_neurons, target=target)
+    df = facts.to_dataframe()
+    LOG.info("Generated factsheet with %d facts for '%s'", len(df), target)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Summary report
+# ---------------------------------------------------------------------------
+
+def mb_summary_report(annotations):
+    """Run the complete MB exploration pipeline and print a report.
+
+    Parameters
+    ----------
+    annotations : pd.DataFrame
+        Full FlyWire annotation table.
+
+    Returns
+    -------
+    dict
+        Keys: 'mb_neurons', 'composition', 'factsheet'
+    """
+    # Extract
+    mb = extract_mb_neurons(annotations)
+
+    # Compose
+    comp = mb_composition(mb)
+
+    # Factsheet
+    factsheet = mb_factsheet(mb)
+
+    # Print report
+    lines = [
+        "=" * 60,
+        "MUSHROOM BODY — Exploration Report",
+        "=" * 60,
+        "",
+        f"Total MB neurons: {len(mb):,}",
+        "",
+        "--- Cell class breakdown ---",
+    ]
+    for cls, n in sorted(comp["class_counts"].items(), key=lambda x: -x[1]):
+        lines.append(f"  {cls:20s}: {n:,}")
+
+    lines.append("")
+    lines.append("--- Kenyon cell subtypes ---")
+    for group, n in comp["kc_subtypes"].items():
+        lines.append(f"  {group:25s}: {n:,}")
+
+    lines.append("")
+    lines.append("--- Neurotransmitter profile ---")
+    nt = comp["nt_profile"]
+    if isinstance(nt, pd.DataFrame) and "neuron_count" in nt.columns:
+        for nt_name, row in nt.iterrows():
+            lines.append(f"  {str(nt_name):20s}: {int(row['neuron_count']):,}"
+                         f"  ({row.get('proportion', 0):.1%})")
+    elif isinstance(nt, (pd.Series, dict)):
+        for nt_name, n in (nt.items() if hasattr(nt, 'items') else nt.items()):
+            lines.append(f"  {str(nt_name):20s}: {n:,}")
+
+    lines.append("")
+    lines.append("--- Hemisphere balance ---")
+    for side, n in comp.get("hemisphere_balance", {}).items():
+        lines.append(f"  {side:10s}: {n:,}")
+
+    lines.append("")
+    lines.append("--- Top 10 cell types ---")
+    top = comp["top_cell_types"]
+    if isinstance(top, pd.DataFrame) and "neuron_count" in top.columns:
+        for ct, row in top.head(10).iterrows():
+            lines.append(f"  {str(ct):20s}: {int(row['neuron_count']):,}"
+                         f"  ({row.get('proportion', 0):.1%})")
+    elif isinstance(top, (pd.Series, dict)):
+        items = top.head(10).items() if hasattr(top, 'head') else list(top.items())[:10]
+        for ct, n in items:
+            lines.append(f"  {str(ct):20s}: {n:,}")
+
+    lines.append("")
+    lines.append("--- Structured Factsheet ---")
+    lines.append(factsheet.to_string(index=False))
+    lines.append("")
+    lines.append("=" * 60)
+
+    report = "\n".join(lines)
+    print(report)
+
+    return {
+        "mb_neurons": mb,
+        "composition": comp,
+        "factsheet": factsheet,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    """Run MB exploration from the command line."""
+    import sys
+    if len(sys.argv) < 2:
+        print("Usage: python -m bravli.explore.mushroom_body <annotations.tsv>")
+        sys.exit(1)
+
+    path = sys.argv[1]
+    annotations = load_flywire_annotations(path)
+    mb_summary_report(annotations)
+
+
+if __name__ == "__main__":
+    main()
+#+end_src
+
+** tests/test_mushroom_body.py — integration tests
+
+These tests run against the real FlyWire annotation data.  They verify that
+the entire bravli stack works end-to-end, from raw TSV to factsheet.  If the
+data file is not present, the tests are skipped — they are not unit tests
+for CI, but integration tests for validation.
+
+#+begin_src python :tangle ../tests/test_mushroom_body.py
+"""Integration tests for the mushroom body exploration.
+
+These tests run against the actual FlyWire annotation data and verify
+the full bravli pipeline: load → filter → compose → fact-sheet.
+
+Tests are skipped if the annotation file is not present.
+"""
+
+import pytest
+from pathlib import Path
+
+import pandas as pd
+
+# Path to the annotation data (relative to repo root)
+DATA_PATH = Path(__file__).parent.parent / "data" / "flywire_annotations" / "Supplemental_file1_neuron_annotations.tsv"
+
+pytestmark = pytest.mark.skipif(
+    not DATA_PATH.exists(),
+    reason=f"FlyWire annotation data not found at {DATA_PATH}",
+)
+
+
+@pytest.fixture(scope="module")
+def annotations():
+    """Load the full annotation table once for all tests."""
+    from bravli.parcellation.load_flywire import load_flywire_annotations
+    return load_flywire_annotations(DATA_PATH)
+
+
+@pytest.fixture(scope="module")
+def mb_neurons(annotations):
+    """Extract MB neurons once for all tests."""
+    from bravli.explore.mushroom_body import extract_mb_neurons
+    return extract_mb_neurons(annotations)
+
+
+# ---------------------------------------------------------------------------
+# Data loading tests
+# ---------------------------------------------------------------------------
+
+class TestDataLoading:
+
+    def test_annotations_shape(self, annotations):
+        """Annotations table has expected dimensions."""
+        assert len(annotations) > 100_000, "Expected 100K+ neurons"
+        assert "super_class" in annotations.columns
+        assert "cell_type" in annotations.columns
+
+    def test_annotations_have_mb_classes(self, annotations):
+        """Cell classes include MB-related entries."""
+        classes = annotations["cell_class"].unique()
+        assert "Kenyon_Cell" in classes
+        assert "MBON" in classes
+        assert "DAN" in classes
+
+
+# ---------------------------------------------------------------------------
+# MB extraction tests
+# ---------------------------------------------------------------------------
+
+class TestMBExtraction:
+
+    def test_mb_neuron_count(self, mb_neurons):
+        """MB has expected number of neurons (~5,600)."""
+        assert 5000 < len(mb_neurons) < 7000
+
+    def test_kenyon_cells_dominate(self, mb_neurons):
+        """Kenyon cells are the majority of MB neurons."""
+        kc = mb_neurons[mb_neurons["cell_class"] == "Kenyon_Cell"]
+        assert len(kc) > 0.8 * len(mb_neurons)
+
+    def test_hemisphere_balance(self, mb_neurons):
+        """MB neurons are roughly balanced across hemispheres."""
+        sides = mb_neurons["side"].value_counts()
+        if "left" in sides.index and "right" in sides.index:
+            ratio = sides["left"] / sides["right"]
+            assert 0.9 < ratio < 1.1, f"Hemisphere ratio {ratio:.2f} is unbalanced"
+
+
+# ---------------------------------------------------------------------------
+# Composition tests
+# ---------------------------------------------------------------------------
+
+class TestMBComposition:
+
+    def test_composition_keys(self, mb_neurons):
+        """Composition dict has all expected keys."""
+        from bravli.explore.mushroom_body import mb_composition
+        comp = mb_composition(mb_neurons)
+        assert "class_counts" in comp
+        assert "kc_subtypes" in comp
+        assert "nt_profile" in comp
+        assert "top_cell_types" in comp
+        assert "hemisphere_balance" in comp
+
+    def test_kc_subtypes_sum(self, mb_neurons):
+        """KC subtype counts sum to total KC count."""
+        from bravli.explore.mushroom_body import mb_composition
+        comp = mb_composition(mb_neurons)
+        kc_total = comp["class_counts"].get("Kenyon_Cell", 0)
+        subtype_total = sum(comp["kc_subtypes"].values())
+        assert subtype_total == kc_total
+
+    def test_nt_profile_has_dopamine(self, mb_neurons):
+        """Neurotransmitter profile includes dopamine (dominant in MB)."""
+        from bravli.explore.mushroom_body import mb_composition
+        comp = mb_composition(mb_neurons)
+        nt = comp["nt_profile"]
+        if isinstance(nt, pd.Series):
+            assert "dopamine" in nt.index
+        elif isinstance(nt, dict):
+            assert "dopamine" in nt
+
+
+# ---------------------------------------------------------------------------
+# Factsheet tests
+# ---------------------------------------------------------------------------
+
+class TestMBFactsheet:
+
+    def test_factsheet_is_dataframe(self, mb_neurons):
+        """Factsheet returns a DataFrame."""
+        from bravli.explore.mushroom_body import mb_factsheet
+        df = mb_factsheet(mb_neurons)
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) > 0
+
+    def test_factsheet_has_neuron_count(self, mb_neurons):
+        """Factsheet includes a neuron count fact."""
+        from bravli.explore.mushroom_body import mb_factsheet
+        df = mb_factsheet(mb_neurons)
+        assert "Neuron count" in df["name"].values
+
+    def test_neuron_count_value(self, mb_neurons):
+        """Neuron count fact matches actual count."""
+        from bravli.explore.mushroom_body import mb_factsheet
+        df = mb_factsheet(mb_neurons)
+        row = df[df["name"] == "Neuron count"]
+        assert row.iloc[0]["value"] == len(mb_neurons)
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline test
+# ---------------------------------------------------------------------------
+
+class TestFullPipeline:
+
+    def test_summary_report(self, annotations, capsys):
+        """Full summary report executes without error."""
+        from bravli.explore.mushroom_body import mb_summary_report
+        result = mb_summary_report(annotations)
+        assert "mb_neurons" in result
+        assert "composition" in result
+        assert "factsheet" in result
+        # Check that it printed something
+        captured = capsys.readouterr()
+        assert "MUSHROOM BODY" in captured.out
+        assert "Kenyon_Cell" in captured.out
+#+end_src
+
+* Key Design Decisions
+  | Decision                                | Rationale                                             |
+  |-----------------------------------------+-------------------------------------------------------|
+  | MB defined by cell_class, not neuropil  | FlyWire annotations lack per-neuropil neuron lists;   |
+  |                                         | cell_class gives cleaner MB boundary                  |
+  | Include DAN in MB circuit               | DANs are functionally integral (reinforcement signal) |
+  | KC subtypes grouped by lobe             | Biologically meaningful: γ=short-term, αβ=long-term  |
+  | Integration tests skip without data     | CI-friendly: tests pass everywhere, validate locally  |
+  | Script + functions, not notebook        | Reproducible, importable, testable, version-friendly  |
+
+* Testing
+
+To run the integration tests (requires downloaded annotation data):
+
+#+begin_example
+cd /path/to/bravli
+pytest tests/test_mushroom_body.py -v
+#+end_example
+
+To run the full exploration from the command line:
+
+#+begin_example
+python -m bravli.explore.mushroom_body \
+    data/flywire_annotations/Supplemental_file1_neuron_annotations.tsv
+#+end_example
+
+* Exercises for the Reader
+
+1. *Another neuropil*: adapt the MB exploration script for the /antennal lobe/
+   (cell_class = "ALLN", "ALPN", "ALON").  What is its neurotransmitter
+   profile?  How does it compare to the MB?
+
+2. *DAN subtypes*: the PAM and PPL1 clusters encode different valences
+   (reward vs punishment).  Can you separate them using cell_type prefixes
+   and compare their properties?
+
+3. *Connectivity*: when we add CAVE integration (Phase 2), we will be able
+   to query the KC→MBON synapse counts.  Sketch the API: what function
+   signatures would you add to this exploration module?
+
+4. *Temporal dynamics*: the FlyWire annotations are a static snapshot.
+   How would you extend bravli to incorporate time-varying data (e.g.,
+   calcium imaging, behavioral correlates)?
+
+* Requirements for Agents                                        :noexport:
+  #+begin_src yaml :tangle no
+  lesson: 05-explore-mushroom-body
+  files_created:
+    - bravli/explore/__init__.py
+    - bravli/explore/mushroom_body.py
+    - tests/test_mushroom_body.py
+  data_required:
+    - data/flywire_annotations/Supplemental_file1_neuron_annotations.tsv
+  verification:
+    - pytest tests/test_mushroom_body.py -v
+    - python -m bravli.explore.mushroom_body data/flywire_annotations/Supplemental_file1_neuron_annotations.tsv
+  depends_on:
+    - 00-foundations (Dataset, logging)
+    - 01-parcellation (load_flywire_annotations)
+    - 02-composition (cell_type_distribution, neurotransmitter_profile, top_types)
+    - 03-factology (NeuropilFacts)
+    - 04-visualization (show_neuropil_connectivity — optional)
+  #+end_src
+
+* Local Variables                                                :noexport:
+  # Local Variables:
+  # org-confirm-babel-evaluate: nil
+  # End:

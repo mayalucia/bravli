@@ -1,0 +1,466 @@
+#+title: A Plan to Reconstruct and Simulate the Drosophila Brain in 2026
+#+author: MayaLucIA (Human + AI collaboration)
+#+date: 2026-02-19
+#+property: header-args :eval no-export
+
+* Preamble
+:PROPERTIES:
+:CUSTOM_ID: sec:preamble
+:END:
+
+This document lays out a plan to build a digital twin of the /Drosophila
+melanogaster/ brain, inspired by the Blue Brain Project's 20-year approach to
+reconstructing mammalian brain circuits but adapted for 2026 --- a year when
+complete connectomes exist and AI can accelerate every step.
+
+We are not making research breakthroughs. We want to *have fun while we learn
+neuroscience*. The result is an educational and research tool: a digital twin
+that lets us explore brain circuits, ask questions, and simulate neural
+activity on a laptop.
+
+** How this document fits into bravli
+
+#+begin_example
+  bravli/codev/
+  ├── 00-foundations.org      Datasets, logging, benchmarks
+  ├── 01-parcellation.org     Neuropil atlas from FlyWire
+  ├── 02-composition.org      Cell type composition per neuropil
+  ├── 03-factology.org        Structured facts about the circuit
+  ├── 04-visualization.org    3D visualization with navis + plotly
+  ├── 05-explore-mushroom-body.org  Deep dive into the MB
+  ├── 06-atlas.org            Neuropil meshes + skeleton rendering
+  └── 07-plan-fly-brain-2026.org   << THIS FILE: the roadmap >>
+#+end_example
+
+Lessons 00--06 already provide the foundation. This document charts the path
+forward: from atlas to circuit to simulation.
+
+** Audience
+
+Two audiences read this simultaneously:
+
+1. *A human scientist* learning neuroscience through the lens of computational
+   reconstruction, who values clear explanations and visual intuition.
+2. *An AI agent* (MayaDevGenI) that will implement each phase, needing precise
+   specifications, file paths, data formats, and test criteria.
+
+** Principles (MayaLucIA)
+
+- Literate programming :: Org-mode files are the single source of truth.
+     Python code is tangled from these files, never edited directly.
+- Dual audience :: Every section teaches the science /and/ specifies the code.
+- Piecewise progress :: Each phase produces a working, testable artifact.
+- Fun first :: Choose the path that teaches the most interesting neuroscience.
+
+* Part I: What BBP Built and How
+:PROPERTIES:
+:CUSTOM_ID: sec:bbp-approach
+:END:
+
+** The BBP Pipeline: 20 Years in 9 Stages
+
+The Blue Brain Project reconstructed the rat somatosensory cortex (SSCx) as a
+4.2-million-neuron, 14.2-billion-synapse digital twin. Their pipeline, refined
+across the 2015 NMC paper (Markram et al.) and the 2023 SSCx manuscript
+(Reimann et al., Isbister et al.), proceeds in 9 stages:
+
+#+name: tbl:bbp-pipeline
+| # | Stage                  | Input                           | Output                          | Key Insight                                  |
+|---+------------------------+---------------------------------+---------------------------------+----------------------------------------------|
+| 1 | Digital Scaffold Atlas | Printed Paxinos-Watson atlas    | Volumetric annotation (NRRD)    | Digitize geometry, compute orientations      |
+| 2 | Cell Density Atlas     | NeuN/GABA stains, RT-PCR       | Per-mtype density volumes       | Sparse-to-dense via marker-to-morphotype map |
+| 3 | Morphology Models      | Reconstructed morphologies      | Morphology database + clones    | 1,009 reconstructions -> 60 m-types          |
+| 4 | E-model Fitting        | Patch-clamp recordings          | 11 e-types, 212 me-types        | Ion channel optimization                     |
+| 5 | Cell Placement         | Density atlas + morphologies    | Positioned neurons in volume    | Sample from density fields                   |
+| 6 | Local Connectivity     | Axo-dendritic overlap + boutons | 9.1B intrinsic synapses         | Peters' Rule + bouton density constraints    |
+| 7 | Long-Range Connections | Projection data                 | 5.0B extrinsic synapses         | Thalamo-cortical + cortico-cortical          |
+| 8 | Synaptic Physiology    | Paired recordings, STP data     | 6 synapse types, pathway params | gSyn, u, d, f per pathway                    |
+| 9 | Calibration/Simulation | Complete circuit + ref. rates   | Calibrated simulator            | In-vivo-like at phase transition edge        |
+
+BBP's core philosophy: *sparse experimental data + biological rules =
+dense tissue-level model*. They measured representative samples and used
+interdependencies between biological levels to fill gaps.
+
+** The BBP Atlas Pipeline (from code on this machine)
+
+From reading ~atlas-building-tools~, ~blue_brain_atlas~, and ~atlas-tools~ in
+=~/work/bbp/work/=, the atlas pipeline proceeds:
+
+1. *Combination*: Merge CCFv2 + CCFv3 annotations, align ISH marker images
+2. *Annotation refinement*: Split Layer 2/3, region-specific corrections
+3. *Direction vectors*: Layer-based orientation fields (isocortex, thalamus, cerebellum)
+4. *Placement hints*: Distance-to-boundary fields for cell placement
+5. *Density computation*: Nissl -> cell density; markers -> glia/neuron/inh/exc
+6. *Cell placement*: Sample positions from density fields
+7. *Export*: NRRD volumes, HDF5 cell databases, web visualization
+
+Key tools: =voxcell= (volumetric data), =atlas-building-tools= (CLI pipeline),
+=blue_brain_atlas= (orchestration), NRRD format at 10--25 um resolution.
+
+** The SSCx Portal and Factology
+
+From =proj83/sscx_portal/=, the dissemination system uses:
+
+- *connsense-TAP*: Extracts intermediate-resolution data from the full circuit
+  (node types, populations, edges, composition, connectivity, physiology)
+- *portal-LAB*: 55+ laboratory methods compute facts from connsense data
+- *Factology*: YAML factsheet templates with missing values, filled by computation
+  - Topics: SSCxOverview, BrainRegion, Circuit, CircuitLayers, Pathways, MTypes
+  - Subtargets: whole mosaic, 8 regions, 8 central columns
+- *Validation*: Reference data from experiments, compared at every level
+
+This is the pattern bravli already follows (lessons 03-factology).
+
+** The Hippocampus (proj112): Lessons on Non-Cortical Geometry
+
+The hippocampus CA1 project showed that:
+- High curvature breaks the cortical assumption of random transverse orientation
+- Non-layered or differently-layered structures need adapted placement algorithms
+- The core pipeline (atlas -> composition -> connectivity -> physiology) transfers,
+  but geometry handling must be region-specific
+
+This is directly relevant: Drosophila neuropils are *not* layered cortex.
+
+* Part II: What Exists for the Fly Brain
+:PROPERTIES:
+:CUSTOM_ID: sec:fly-data
+:END:
+
+** The Data Landscape (2024--2025)
+
+Unlike the mammalian brain where BBP had sparse data, for Drosophila we have
+*dense, complete reconstructions*. The challenge is reversed: we must derive
+organizational principles FROM dense data, not use principles to FILL sparse data.
+
+#+name: tbl:fly-datasets
+| Dataset          | Year | Neurons  | Synapses | Coverage               | Access         |
+|------------------+------+----------+----------+------------------------+----------------|
+| FlyWire (FAFB)   | 2024 | 139,255  | 54.5M    | Full adult female brain | Codex (public) |
+| Male CNS (Janelia)| 2024 | 166,000  | 312M     | Full male brain + VNC  | neuPrint       |
+| Hemibrain v1.2   | 2020 | ~25,000  | ~20M     | Partial central brain  | neuPrint       |
+| MANC             | 2023 | ~10,000  | ~30M     | Male nerve cord        | neuPrint       |
+| Optic Lobe       | 2024 | ~50,000  | -        | Full optic lobe        | Public         |
+
+** FlyWire: Our Primary Dataset
+
+FlyWire is our primary dataset because:
+- Complete adult brain (not partial like hemibrain)
+- 8,453 cell types identified (4,581 newly described)
+- Neurotransmitter predictions for 87% of synapses (Eckstein et al. 2024, /Cell/)
+  - 6 NTs: ACh, GABA, glutamate, serotonin, dopamine, octopamine
+  - 94% neuron-level accuracy
+- Auth-free data access for skeletons and annotations
+- Already loaded into bravli (TSV annotations + Zenodo parquet skeletons)
+
+** What bravli Already Has (Lessons 00--06)
+
+#+begin_example
+  bravli data assets:
+  ├── FlyWire annotations TSV  (139,244 neurons, 31 columns)
+  ├── Zenodo skeleton parquet   (5.1 GB, all neurons)
+  ├── Neuropil meshes           (78 PLY files via fafbseg, no auth)
+  └── Interactive 3D HTML plots (100+ MB, plotly)
+
+  bravli code (89 tests passing):
+  ├── bench/dataset.py          Dataset loading + validation
+  ├── parcellation/             Neuropil parcellation + FlyWire loader
+  ├── composition/              Cell type composition per neuropil
+  ├── factology/                Structured fact system (Fact, Factology)
+  ├── viz/                      3D visualization (navis + plotly)
+  ├── explore/mushroom_body.py  Deep dive: MB Kenyon cells
+  └── atlas/                    Neuropil meshes + skeleton rendering
+#+end_example
+
+** Tools Already Available for Simulation
+
+| Tool              | Year | What it does                                      | Runs on laptop? |
+|-------------------+------+---------------------------------------------------+-----------------|
+| FlyBrainLab       | 2021 | Executable circuits from connectome               | Yes (Docker)    |
+| NeuroMechFly v2   | 2024 | Embodied sensorimotor simulation (Nature Methods)  | Yes             |
+| Berkeley LIF sim  | 2024 | Whole-brain LIF on laptop (Nature)                 | Yes             |
+| Brian2            | -    | General spiking neural network simulator           | Yes             |
+| NEST              | -    | Large-scale spiking simulator                      | Yes             |
+
+The key insight: *whole-brain Drosophila simulation is already possible on a
+laptop* (Berkeley 2024, Nature). We don't need a supercomputer.
+
+* Part III: The Plan --- Mapping BBP's Pipeline to Fly Brain
+:PROPERTIES:
+:CUSTOM_ID: sec:plan
+:END:
+
+** Overview
+
+We adapt BBP's 9-stage pipeline for a species where the connectome is known:
+
+#+begin_example
+  BBP Pipeline (sparse -> dense)        bravli Pipeline (dense -> organized)
+  ─────────────────────────────         ─────────────────────────────────────
+  1. Atlas (digitize anatomy)      -->  1. Atlas (neuropil meshes + parcellation)  [DONE]
+  2. Cell density (stains -> maps) -->  2. Composition (connectome -> cell counts) [DONE]
+  3. Morphology models             -->  3. Morphology (skeletons from EM)          [DONE]
+  4. E-models (patch clamp)        -->  4. Cell models (from literature + NT type) [TODO]
+  5. Cell placement                -->  5. Already placed (EM coordinates)         [FREE]
+  6. Local connectivity            -->  6. Already known (FlyWire connectome)      [FREE]
+  7. Long-range connections        -->  7. Already known (in connectome)           [FREE]
+  8. Synapse physiology            -->  8. NT-based physiology (Eckstein 2024)     [TODO]
+  9. Calibration / simulation      -->  9. LIF simulation (Berkeley 2024 method)   [TODO]
+#+end_example
+
+The fly brain project inverts the BBP challenge. Where BBP spent most effort on
+stages 1--7 (building anatomy from sparse data), for us stages 1--7 are largely
+*given by the connectome*. Our effort concentrates on stages 4, 8, 9:
+physiological cell models, synaptic parameterization, and simulation.
+
+** Phase-by-Phase Roadmap
+
+*** Phase 0: Foundation (DONE -- Lessons 00-06)
+- [X] Load and validate FlyWire dataset
+- [X] Parcellation: 78 neuropils with mesh volumes
+- [X] Composition: cell type counts per neuropil (8,453 types)
+- [X] Factology: structured measurement framework
+- [X] Visualization: 3D neuropil + skeleton rendering
+- [X] Exploration: mushroom body deep dive
+- [X] Atlas: combined neuropil + skeleton visualization
+
+*** Phase 1: Connectivity Analysis (NEW -- Lesson 08)
+
+Goal: Build the connectivity matrix and analyze circuit motifs.
+
+- [ ] Load FlyWire synapse table (54.5M synapses)
+  - Source: FlyWire Codex or FAFB-Flywire materialization
+  - Format: pre_id, post_id, neuropil, NT type, position
+  - Challenge: may need CAVE token, or use published summary tables
+- [ ] Build neuropil-to-neuropil connectivity matrix
+  - Weighted by synapse count, split by NT type
+  - Analogous to BBP's inter-regional connectivity analysis
+- [ ] Analyze pathway statistics
+  - Convergence/divergence per cell type
+  - Connection probability by cell type pair
+  - Reciprocity and motif analysis
+- [ ] Validate against published analyses (Dorkenwald et al. 2024)
+- [ ] Factsheets: connectivity facts per neuropil pair
+
+*** Phase 2: Neurotransmitter-Based Physiology (Lesson 09)
+
+Goal: Assign synaptic physiology parameters using NT predictions.
+
+- [ ] Map 6 NT types to sign (excitatory/inhibitory) and kinetics
+  - ACh -> excitatory, fast (nAChR: tau_rise ~0.2ms, tau_decay ~1.5ms)
+  - GABA -> inhibitory, fast (GABA_A: tau_rise ~0.5ms, tau_decay ~5ms)
+  - Glutamate -> excitatory, varies (tau depends on receptor subtype)
+  - Serotonin -> modulatory, slow
+  - Dopamine -> modulatory, slow
+  - Octopamine -> modulatory, slow (insect-specific)
+- [ ] Literature review: Drosophila synaptic parameters
+  - PSP amplitudes, time constants, failure rates
+  - Short-term plasticity characterization (if available)
+- [ ] Build synaptic physiology model per NT type
+  - Analogous to BBP's 6 synapse types with (gSyn, u, d, f, tau_rise, tau_decay)
+  - Start simple: one parameter set per NT type
+  - Refine per cell-type pair where data exists
+- [ ] Factsheets: synaptic physiology facts per NT type and pathway
+
+*** Phase 3: Cell Electrical Models (Lesson 10)
+
+Goal: Assign intrinsic electrical properties to each neuron.
+
+- [ ] Survey Drosophila electrophysiology literature
+  - Resting potential, input resistance, membrane time constant
+  - Action potential threshold and shape (for spiking neurons)
+  - Graded potential neurons (many fly neurons are non-spiking!)
+- [ ] Define cell model types
+  - Spiking (LIF or AdEx) for projection neurons
+  - Graded (passive cable + voltage-dependent conductances) for local interneurons
+  - Map to FlyWire cell types
+- [ ] Implement cell models
+  - Start with point-neuron LIF (Berkeley 2024 approach)
+  - Later: multi-compartment using skeleton morphologies
+- [ ] Factsheets: cell electrical properties per type
+
+*** Phase 4: Circuit Assembly and Simulation (Lesson 11)
+
+Goal: Assemble the complete circuit and simulate activity.
+
+- [ ] Define simulation scope
+  - Start with a single neuropil (mushroom body -- already explored)
+  - Then expand: mushroom body + connected neuropils
+  - Eventually: whole brain
+- [ ] Build circuit in simulation format
+  - Option A: Brian2 (Python, flexible, good for education)
+  - Option B: Custom LIF engine (Berkeley 2024 approach, fast)
+  - Option C: NEST (scalable, MPI-parallel)
+- [ ] Define stimulus protocols
+  - Olfactory: odor -> antennal lobe -> mushroom body
+  - Visual: light -> optic lobe -> central complex
+  - Spontaneous: no input, observe resting dynamics
+- [ ] Calibrate: match known Drosophila neural dynamics
+  - Mushroom body: sparse coding, ~5-10% Kenyon cells active
+  - Antennal lobe: oscillatory dynamics at ~20 Hz
+  - Central complex: head direction signals
+- [ ] Run whole-brain simulation
+  - LIF point neurons, 139K cells, 54.5M synapses
+  - Target: real-time or faster on a laptop (Berkeley achieved this)
+- [ ] Validation
+  - Compare activity patterns to calcium imaging data
+  - Check E/I balance per neuropil
+  - Verify known functional circuits (e.g., MB learning)
+
+*** Phase 5: Digital Twin Portal (Lesson 12)
+
+Goal: Build an interactive exploration tool following BBP's portal model.
+
+- [ ] Define factology topics (adapting BBP's hierarchy)
+  - WholebrainOverview
+  - Neuropil (78 neuropils)
+  - CellType (8,453 types)
+  - Pathway (NT-typed connections between cell types)
+  - Simulation (activity patterns, dynamics)
+- [ ] Build exploration interface
+  - 3D brain viewer (extend current plotly visualization)
+  - Click neuropil -> see composition, connectivity, activity
+  - Click cell type -> see morphology, connections, firing pattern
+- [ ] Educational narratives
+  - Guided tours: "Follow an odor from antenna to mushroom body"
+  - Comparative: "How does the fly MB compare to mammalian hippocampus?"
+  - Experimental: "What happens if we silence dopamine neurons?"
+
+*** Phase 6: MayaPortal WebGPU Visualization (Future)
+
+- [ ] WebGPU-based 3D rendering (replace plotly for performance)
+- [ ] Real-time simulation visualization
+- [ ] Collaborative exploration interface
+
+* Part IV: Technical Specifications
+:PROPERTIES:
+:CUSTOM_ID: sec:specs
+:END:
+
+** Data Formats
+
+| Data                    | Format        | Size    | Location                           |
+|-------------------------+---------------+---------+------------------------------------|
+| Neuron annotations      | TSV           | 32 MB   | data/flywire_annotations/          |
+| Neuron skeletons        | Parquet       | 5.1 GB  | data/zenodo/                       |
+| Neuropil meshes         | PLY (via pkg) | ~50 MB  | fafbseg bundled                    |
+| Synapse table           | TBD           | ~2 GB   | To be acquired (Phase 1)           |
+| Connectivity matrix     | scipy.sparse  | ~500 MB | To be computed (Phase 1)           |
+| Cell models             | YAML + Python | <1 MB   | bravli/models/ (Phase 3)           |
+| Simulation output       | HDF5          | varies  | output/simulations/ (Phase 4)      |
+
+** Dependencies
+
+Current (installed and tested):
+- navis 1.10.0, fafbseg 3.2.1, flybrains 0.6.3
+- plotly 6.5.2, pandas, numpy, scipy
+- Python 3.12.12
+
+To add for simulation phases:
+- brian2 (Phase 4, spiking simulator)
+- or custom LIF engine (Phase 4)
+- networkx or graph-tool (Phase 1, connectivity analysis)
+- h5py (Phase 4, simulation I/O)
+
+** File Organization (Planned)
+
+#+begin_example
+  bravli/
+  ├── codev/
+  │   ├── 00-06     (existing lessons)
+  │   ├── 07-plan   (this file)
+  │   ├── 08-connectivity.org
+  │   ├── 09-synaptic-physiology.org
+  │   ├── 10-cell-models.org
+  │   ├── 11-simulation.org
+  │   └── 12-portal.org
+  ├── bravli/
+  │   ├── (existing modules)
+  │   ├── connectivity/     (Phase 1)
+  │   ├── physiology/       (Phase 2)
+  │   ├── models/           (Phase 3)
+  │   └── simulation/       (Phase 4)
+  ├── data/
+  │   ├── (existing data)
+  │   └── synapses/         (Phase 1)
+  └── tests/
+      ├── (existing tests)
+      └── test_connectivity.py, etc.
+#+end_example
+
+* Part V: Key Differences from BBP's Approach
+:PROPERTIES:
+:CUSTOM_ID: sec:differences
+:END:
+
+** The Inversion: Dense Data Instead of Sparse
+
+| Aspect                    | BBP (rat SSCx)                   | bravli (fly brain)                      |
+|---------------------------+----------------------------------+-----------------------------------------|
+| Starting data             | Sparse (~2000 neurons sampled)   | Dense (139K neurons, all synapses)      |
+| Core challenge            | Extrapolate sparse -> dense      | Organize dense -> meaningful            |
+| Atlas                     | Digitize printed atlas           | Meshes from EM reconstruction           |
+| Cell placement            | Sample from density fields       | Exact EM-derived positions              |
+| Connectivity              | Predict from morphology overlap  | Known from EM synapse detection         |
+| Morphologies              | ~1000 reconstructions + clones   | 139K skeletons (all neurons)            |
+| Electrophysiology         | Patch-clamp recordings available | Sparse; mostly calcium imaging          |
+| Neurotransmitter identity | Known per cell type (literature) | Predicted from EM (87-94% accuracy)     |
+| Simulation scale          | 4.2M neurons, supercomputer      | 139K neurons, laptop                    |
+| Brain organization        | 6-layer cortex                   | 78 neuropils, no cortical layers        |
+
+** What Transfers Directly
+
+1. *Factology framework* -- structured facts at multiple biological levels
+2. *Multi-scale exploration* -- overview -> neuropil -> cell type -> pathway
+3. *Validation methodology* -- compare model predictions to independent data
+4. *Pipeline modularity* -- each stage independently testable
+5. *Literate programming* -- code + narrative as single source of truth
+
+** What Must Be Adapted
+
+1. *No cortical layers* -- fly neuropils are compartments, not laminar sheets
+2. *Morphology-based connectivity is unnecessary* -- we HAVE the connectome
+3. *Cell models differ* -- many fly neurons use graded potentials, not spikes
+4. *NT-based physiology* -- 6 NTs instead of detailed pathway measurements
+5. *Scale is inverted* -- fewer neurons but complete; no need for extrapolation
+
+* Part VI: Timeline and Milestones
+:PROPERTIES:
+:CUSTOM_ID: sec:timeline
+:END:
+
+This is a learning project, not a deadline-driven one. But milestones help:
+
+| Phase | Description                    | Key Deliverable                            |
+|-------+--------------------------------+--------------------------------------------|
+| 0     | Foundation (DONE)              | 89 tests, 3D atlas visualization           |
+| 1     | Connectivity analysis          | Neuropil connectivity matrix + factsheets  |
+| 2     | Synaptic physiology            | NT-based synapse parameter database        |
+| 3     | Cell electrical models         | LIF/graded models for each cell type class |
+| 4     | Circuit simulation             | Whole-brain LIF running on laptop          |
+| 5     | Digital twin portal            | Interactive exploration tool               |
+| 6     | WebGPU visualization (future)  | Real-time 3D brain viewer                  |
+
+Each phase produces a new lesson (org file), new Python modules, and new tests.
+Each phase is independently interesting and educational.
+
+* Bibliography
+:PROPERTIES:
+:CUSTOM_ID: sec:bibliography
+:END:
+
+Key references informing this plan:
+
+- Markram et al. (2015). Reconstruction and simulation of neocortical microcircuitry. /Cell/ 163(2).
+- Reimann et al. (2024). Modeling and simulation of rat non-barrel somatosensory cortex. Part I: Anatomy. /eLife/.
+- Isbister et al. (2024). Modeling and simulation of rat non-barrel somatosensory cortex. Part II: Physiology. /eLife/.
+- Dorkenwald et al. (2024). Neuronal wiring diagram of an adult brain. /Nature/ 634.
+- Schlegel et al. (2024). Whole-brain annotation and multi-connectome cell typing. /Nature/ 634.
+- Eckstein et al. (2024). Neurotransmitter classification from EM. /Cell/ 187(18).
+- Shiu et al. (2024). Whole-brain simulation of Drosophila on a laptop. /Nature/.
+- Lazar et al. (2024). NeuroMechFly v2. /Nature Methods/.
+- Matsliah et al. (2024). Cell type census of the adult Drosophila brain. /Nature/ 634.
+
+* Local variables :noexport:
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:

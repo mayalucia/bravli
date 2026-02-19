@@ -1,0 +1,801 @@
+#+title: Lesson 00 — Foundations
+#+subtitle: Datasets, lazy evaluation, and the shape of scientific data management
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Every scientific computation begins with data. Not just raw bytes on disc, but
+data that carries /meaning/: where it came from, what it represents, how to load it,
+how to save it, and — crucially — how to compose it with other data without drowning
+in plumbing code.
+
+The Blue Brain Project spent a decade building infrastructure for this. Their
+Knowledge Graph (NEXUS) stored petabytes of neuroscience data with full provenance.
+Their pipeline managed hundreds of datasets across an HPC cluster. Most of that
+infrastructure is gone now — the cluster, the knowledge graph, the institutional
+support.
+
+But the /ideas/ survived. And the most portable idea is this: *a dataset is not a
+file. A dataset is a typed, named, described, lazy-loading object that knows how to
+materialize itself.* When you pass a =Dataset= to a function, the function doesn't
+need to know whether the data lives on disc, in memory, or hasn't been computed yet.
+It just calls =.value= and gets the data.
+
+The second idea: *computation functions should not know about datasets at all.* A
+function that counts neurons per brain region should accept a =pandas.DataFrame=, not
+a =Dataset=. The =@evaluate_datasets= decorator bridges the gap — it unwraps any
+=Dataset= arguments to their =.value= before the function sees them. This means every
+domain function is testable with plain data, yet composable in a pipeline of datasets.
+
+This lesson establishes these two foundations and the minimal logging utility we need
+to observe what the system is doing.
+
+** Learning Objectives
+
+- [ ] Understand why scientific data management needs more than file paths
+- [ ] Implement the =Dataset= class hierarchy with lazy loading
+- [ ] Implement the =@evaluate_datasets= decorator for transparent unwrapping
+- [ ] Set up a lightweight logger suitable for interactive (Jupyter) use
+- [ ] Write tests that verify round-trip dataset operations
+
+** File Map
+
+| File                       | Role                                    |
+|----------------------------+-----------------------------------------|
+| =bravli/__init__.py=      | Package root                            |
+| =bravli/bench/__init__.py= | Bench subpackage                       |
+| =bravli/bench/dataset.py= | Dataset hierarchy + @evaluate_datasets  |
+| =bravli/utils/__init__.py= | Utils subpackage                       |
+| =bravli/utils/logging.py= | Print-based logger for interactive use  |
+| =tests/test_dataset.py=   | Dataset creation, loading, unwrapping   |
+
+* Architecture
+
+The dataset system has three layers:
+
+#+begin_example
+                    ┌──────────────────────────────────┐
+                    │     Domain Functions               │
+                    │  (accept raw data: DataFrame,      │
+                    │   ndarray, dict, etc.)              │
+                    └──────────────┬───────────────────┘
+                                   │
+                    @evaluate_datasets decorator
+                     (unwraps .value transparently)
+                                   │
+                    ┌──────────────┴───────────────────┐
+                    │     Dataset Objects                 │
+                    │  .value → lazy-loads from disc      │
+                    │  .define() → serializable metadata  │
+                    │  .load(path) → materializes data    │
+                    └──────────────┬───────────────────┘
+                                   │
+                    ┌──────────────┴───────────────────┐
+                    │     File System                     │
+                    │  .csv, .tsv, .json, .yaml, .nrrd   │
+                    └──────────────────────────────────┘
+#+end_example
+
+The class hierarchy:
+
+#+begin_example
+  Dataset                 (base: name, ftype, loader, savior, lazy .value)
+    ├── LocalDataset      (origin: a path on local disc)
+    │     └── CuratedDataset  (author, source — literature-curated data)
+    └── GeneratedDataset  (inputs + computation → derived data)
+#+end_example
+
+We deliberately omit =NexusDataset= (BBP knowledge graph), =CommandedDataset= (Slurm
+jobs), and =RemoteDataset= (scp from cluster). These belonged to an infrastructure
+that no longer exists. If we need remote data access later, we will add a
+=FlyWireDataset= that speaks the CAVE API.
+
+* Implementation
+
+** Package root
+
+The package root simply declares what bravli is. Subpackages are imported by the
+user as needed — we avoid eager imports of heavy dependencies.
+
+#+begin_src python :tangle ../bravli/__init__.py
+"""bravli — Brain Reconstruction Analysis and Validation Library.
+
+A toolkit for exploring the Drosophila whole-brain connectome,
+inheriting ideas from the Blue Brain Project's cell atlas pipeline.
+
+Subpackages:
+    bench         Dataset management and lazy evaluation
+    parcellation  Neuropil region hierarchy and FlyWire loader
+    composition   Cell type distributions and neurotransmitter profiles
+    factology     Structured scientific measurements
+    viz           3D visualization via navis
+"""
+
+__version__ = "0.1.0"
+#+end_src
+
+** Bench subpackage init
+
+#+begin_src python :tangle ../bravli/bench/__init__.py
+"""bench — Dataset management for scientific data.
+
+The central abstraction: a Dataset is a typed, named, lazy-loading object
+that knows how to materialize itself from disc. The @evaluate_datasets
+decorator lets domain functions accept either raw data or Dataset objects
+transparently.
+"""
+
+from .dataset import (
+    Dataset,
+    LocalDataset,
+    CuratedDataset,
+    GeneratedDataset,
+    evaluate_datasets,
+)
+#+end_src
+
+** Utils subpackage init
+
+#+begin_src python :tangle ../bravli/utils/__init__.py
+"""utils — Lightweight utilities for bravli."""
+
+from .logging import get_logger
+#+end_src
+
+** Logging
+
+Python's =logging= module is designed for long-running server processes. In an
+interactive Jupyter session, its messages vanish into the void unless you configure
+handlers — and even then, the output interleaves awkwardly with cell output.
+
+We use a simpler approach: a print-based logger that writes directly to =sys.stdout=.
+Each message gets a header with the logger name, level, and timestamp. This is
+intentionally unsophisticated. The goal is /visibility/, not configurability.
+
+This pattern comes from the original =explore_bba= project, where it was called the
+"quack logger" — if it prints like a logger and timestamps like a logger, it's a
+logger.
+
+#+begin_src python :tangle ../bravli/utils/logging.py
+"""A print-based logger for interactive scientific computing.
+
+Standard Python logging disappears in Jupyter notebooks unless carefully
+configured. This module provides a simple alternative: print to stdout
+with timestamps and level labels. Unsophisticated, but visible.
+
+Usage:
+    from bravli.utils import get_logger
+    log = get_logger("my_module")
+    log.info("Loading %s neurons", 1000)
+"""
+
+import sys
+from datetime import datetime
+
+
+def get_logger(name, out=None):
+    """Create a print-based logger.
+
+    Parameters
+    ----------
+    name : str
+        Logger name, displayed in every message header.
+    out : file-like, optional
+        Additional output stream (e.g., an open log file).
+
+    Returns
+    -------
+    callable
+        A log function with .debug, .info, .warning, .error methods.
+    """
+    prefix = f"bravli:{name}"
+    line_length = 72
+    outputs = [sys.stdout] + ([out] if out else [])
+
+    def _header(level):
+        now = datetime.now().strftime("%H:%M:%S")
+        for dest in outputs:
+            print(f"{'_' * line_length}", file=dest)
+            print(f"{prefix} {level} [{now}]", file=dest)
+
+    def log(level, msg, args):
+        _header(level)
+        for dest in outputs:
+            try:
+                print(msg % args, file=dest)
+            except TypeError:
+                print(msg, file=dest)
+
+    log.debug = lambda msg, *args: log("DEBUG", msg, args)
+    log.info = lambda msg, *args: log("INFO", msg, args)
+    log.warning = lambda msg, *args: log("WARNING", msg, args)
+    log.error = lambda msg, *args: log("ERROR", msg, args)
+
+    return log
+#+end_src
+
+** The Dataset hierarchy
+
+This is the core abstraction. A =Dataset= knows its name, file type, how to load
+and save itself, and lazily materializes its =.value= on first access.
+
+Notice what we /don't/ include: no NEXUS IDs, no Slurm job management, no remote
+copy. Those were BBP infrastructure. What remains is the pure data abstraction —
+the part that was always the good idea underneath.
+
+*** Base Dataset
+
+#+begin_src python :tangle ../bravli/bench/dataset.py
+"""Dataset hierarchy and the @evaluate_datasets decorator.
+
+Heritage: ported from bravlibpy (Blue Brain Project), stripped of NEXUS,
+Slurm, and connsense dependencies. The core patterns — lazy .value,
+@evaluate_datasets, and serializable .define() — are preserved intact.
+"""
+
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
+from copy import deepcopy
+
+import pandas as pd
+import numpy as np
+
+from bravli.utils import get_logger
+
+LOG = get_logger("dataset")
+
+
+# ---------------------------------------------------------------------------
+# Default loaders and saviors
+# ---------------------------------------------------------------------------
+
+def _default_loaders():
+    """File-type → loader function mapping."""
+    import json
+    import yaml
+
+    def load_json(path):
+        with open(path, "r") as f:
+            return json.load(f)
+
+    def load_yaml(path):
+        with open(path, "r") as f:
+            return yaml.safe_load(f)
+
+    return {
+        "csv": pd.read_csv,
+        "tsv": lambda p: pd.read_csv(p, sep="\t"),
+        "json": load_json,
+        "yaml": load_yaml,
+        "feather": pd.read_feather,
+    }
+
+
+def _default_saviors():
+    """File-type → save function mapping."""
+    import json
+    import yaml
+
+    def write_json(data, path):
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    def write_yaml(data, path):
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+
+    return {
+        "csv": lambda df, p: df.to_csv(p, index=False),
+        "tsv": lambda df, p: df.to_csv(p, sep="\t", index=False),
+        "json": write_json,
+        "yaml": write_yaml,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Base Dataset
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Dataset:
+    """A typed, named, lazy-loading scientific dataset.
+
+    The minimum viable description of data: what is it called, what file
+    format is it in, how do we load it, and how do we save it. The .value
+    property lazy-loads the data on first access.
+
+    Parameters
+    ----------
+    name : str
+        Human-readable name.
+    ftype : str
+        File extension / format key (e.g., "csv", "tsv", "json").
+    loader : callable, optional
+        Function path → data. If None, resolved from ftype defaults.
+    savior : callable, optional
+        Function (data, path) → None. If None, resolved from ftype defaults.
+    description : str, optional
+        What this dataset contains.
+    """
+
+    name: str
+    ftype: str
+    loader: Callable = None
+    savior: Callable = None
+    description: str = None
+
+    def __post_init__(self):
+        self._loader_config = self.loader
+        self._savior_config = self.savior
+
+        if self.loader is None:
+            self.loader = _default_loaders().get(self.ftype)
+        if self.savior is None:
+            self.savior = _default_saviors().get(self.ftype)
+
+    def define(self):
+        """Serializable definition of this dataset — for provenance."""
+        return {
+            "class": self.__class__.__qualname__,
+            "name": self.name,
+            "ftype": self.ftype,
+            "description": self.description or "Not provided",
+        }
+
+    def load(self, path):
+        """Load data from a path using this dataset's loader."""
+        if self.loader is None:
+            raise ValueError(f"No loader for dataset '{self.name}' (ftype={self.ftype})")
+        LOG.info("Loading dataset '%s' from %s", self.name, path)
+        self._value = self.loader(Path(path))
+        self._path = Path(path)
+        return self._value
+
+    def save(self, data, path):
+        """Save data to a path using this dataset's savior."""
+        if self.savior is None:
+            raise ValueError(f"No savior for dataset '{self.name}' (ftype={self.ftype})")
+        LOG.info("Saving dataset '%s' to %s", self.name, path)
+        return self.savior(data, Path(path))
+
+    @property
+    def value(self):
+        """Lazy access to the dataset's data.
+
+        On first access, loads from self._path if available.
+        Subsequent accesses return the cached value.
+        """
+        try:
+            return self._value
+        except AttributeError:
+            pass
+        try:
+            return self.load(self._path)
+        except AttributeError:
+            raise RuntimeError(
+                f"Dataset '{self.name}' has no data and no path to load from. "
+                "Call .load(path) first, or create a LocalDataset with an origin."
+            )
+
+    def with_data(self, data):
+        """Attach in-memory data to this dataset. Returns self for chaining."""
+        self._value = data
+        return self
+#+end_src
+
+*** LocalDataset
+
+A dataset that lives at a known path on the local filesystem. The =origin= field
+is the path. On first =.value= access, if no data is loaded yet, it loads from
+=origin=.
+
+#+begin_src python :tangle -
+# (continued in the same file — this block is illustrative only)
+#+end_src
+
+We continue in the same tangled file:
+
+#+begin_src python :tangle ../bravli/bench/dataset.py
+
+# ---------------------------------------------------------------------------
+# LocalDataset
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LocalDataset(Dataset):
+    """A dataset residing at a known local path.
+
+    Parameters
+    ----------
+    origin : Path or str
+        Where the data lives on disc.
+    """
+
+    origin: Any = None  # Path | str — using Any for Python 3.10 compat
+
+    def __post_init__(self):
+        if isinstance(self.origin, str):
+            self.origin = Path(self.origin)
+        if self.origin is not None:
+            self._path = self.origin
+        super().__post_init__()
+
+    def define(self):
+        definition = super().define()
+        definition["origin"] = str(self.origin) if self.origin else None
+        return definition
+#+end_src
+
+*** CuratedDataset
+
+Literature-curated data — assembled by a scientist from publications, spreadsheets,
+or manual annotation. It carries the author's name and the source (typically a paper
+or database). This is the entry point for human knowledge into the system.
+
+#+begin_src python :tangle ../bravli/bench/dataset.py
+
+# ---------------------------------------------------------------------------
+# CuratedDataset
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CuratedDataset(LocalDataset):
+    """A dataset curated from scientific literature.
+
+    Parameters
+    ----------
+    author : str
+        Who assembled this dataset.
+    source : str
+        Where the data came from (paper DOI, database name, etc.).
+    """
+
+    author: str = None
+    source: str = None
+
+    def define(self):
+        definition = super().define()
+        definition["author"] = self.author
+        definition["source"] = self.source
+        return definition
+#+end_src
+
+*** GeneratedDataset
+
+A dataset computed from other datasets. The =inputs= are a list of =Dataset= objects.
+The =computation= is a callable that takes the input values and produces the output.
+This is how derived data is expressed: not as imperative scripts, but as declarative
+relationships between datasets.
+
+#+begin_src python :tangle ../bravli/bench/dataset.py
+
+# ---------------------------------------------------------------------------
+# GeneratedDataset
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GeneratedDataset(Dataset):
+    """A dataset derived from computation on other datasets.
+
+    Parameters
+    ----------
+    inputs : list of Dataset
+        The datasets this computation depends on.
+    computation : callable
+        A function that takes the input values and returns the output.
+    params : dict, optional
+        Additional keyword arguments to pass to the computation.
+    """
+
+    inputs: list = field(default_factory=list)
+    computation: Callable = None
+    params: dict = field(default_factory=dict)
+
+    def generate(self):
+        """Run the computation to produce this dataset's value."""
+        if self.computation is None:
+            raise ValueError(f"No computation defined for dataset '{self.name}'")
+
+        input_values = []
+        for inp in self.inputs:
+            if isinstance(inp, Dataset):
+                input_values.append(inp.value)
+            else:
+                input_values.append(inp)
+
+        LOG.info("Generating dataset '%s' from %d inputs", self.name, len(input_values))
+        self._value = self.computation(*input_values, **self.params)
+        return self._value
+
+    @property
+    def value(self):
+        """Lazy: generate on first access if not already computed."""
+        try:
+            return self._value
+        except AttributeError:
+            return self.generate()
+
+    def define(self):
+        definition = super().define()
+        definition["inputs"] = [
+            inp.define() if isinstance(inp, Dataset) else str(inp)
+            for inp in self.inputs
+        ]
+        definition["computation"] = (
+            f"{self.computation.__module__}.{self.computation.__qualname__}"
+            if self.computation and hasattr(self.computation, "__qualname__")
+            else str(self.computation)
+        )
+        definition["params"] = self.params
+        return definition
+#+end_src
+
+** The =@evaluate_datasets= decorator
+
+This is the bridge between the dataset world and the computation world. It is
+twenty lines of code, and it is the single most important pattern in the entire
+system.
+
+A domain function like =count_neurons_per_neuropil(annotations_df)= accepts a
+=pandas.DataFrame=. But in a pipeline, you might want to pass it a =Dataset=
+object instead. The decorator handles the unwrapping:
+
+#+begin_example
+  @evaluate_datasets
+  def count_neurons(annotations):    # annotations is a DataFrame
+      return annotations.groupby("neuropil").size()
+
+  # Both of these work:
+  count_neurons(my_dataframe)        # raw DataFrame — passed through
+  count_neurons(my_dataset)          # Dataset — .value is extracted first
+#+end_example
+
+The function never knows the difference. This means every domain function is
+testable with plain data /and/ composable in a dataset pipeline.
+
+#+begin_src python :tangle ../bravli/bench/dataset.py
+
+# ---------------------------------------------------------------------------
+# @evaluate_datasets — the transparent unwrapping decorator
+# ---------------------------------------------------------------------------
+
+def evaluate_datasets(method):
+    """Decorator: unwrap Dataset arguments to their .value before calling.
+
+    Any positional or keyword argument that has a .value attribute (i.e., is
+    a Dataset) is replaced by its .value. All other arguments pass through
+    unchanged. This lets domain functions accept either raw data or Dataset
+    objects transparently.
+    """
+
+    def _unwrap(arg):
+        try:
+            return arg.value
+        except AttributeError:
+            return arg
+
+    def wrapper(*args, **kwargs):
+        unwrapped_args = tuple(_unwrap(a) for a in args)
+        unwrapped_kwargs = {k: _unwrap(v) for k, v in kwargs.items()}
+        return method(*unwrapped_args, **unwrapped_kwargs)
+
+    wrapper.__name__ = method.__name__
+    wrapper.__doc__ = method.__doc__
+    wrapper.__wrapped__ = method
+    return wrapper
+#+end_src
+
+** Tests
+
+We test three things: that datasets can be created and defined, that loading and
+saving round-trips work, and that =@evaluate_datasets= correctly unwraps.
+
+#+begin_src python :tangle ../tests/test_dataset.py
+"""Tests for the Dataset hierarchy and @evaluate_datasets."""
+
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from bravli.bench.dataset import (
+    Dataset,
+    LocalDataset,
+    CuratedDataset,
+    GeneratedDataset,
+    evaluate_datasets,
+)
+
+
+class TestDatasetDefinition:
+    """Dataset objects can describe themselves."""
+
+    def test_base_dataset_define(self):
+        ds = Dataset(name="test", ftype="csv", description="a test")
+        defn = ds.define()
+        assert defn["name"] == "test"
+        assert defn["ftype"] == "csv"
+        assert defn["class"] == "Dataset"
+
+    def test_local_dataset_define(self):
+        ds = LocalDataset(name="local", ftype="csv", origin="/tmp/data.csv")
+        defn = ds.define()
+        assert defn["origin"] == "/tmp/data.csv"
+        assert defn["class"] == "LocalDataset"
+
+    def test_curated_dataset_define(self):
+        ds = CuratedDataset(
+            name="lit", ftype="csv",
+            author="Dorkenwald", source="Nature 2024",
+        )
+        defn = ds.define()
+        assert defn["author"] == "Dorkenwald"
+        assert defn["source"] == "Nature 2024"
+
+
+class TestDatasetLoadSave:
+    """Datasets can round-trip through the filesystem."""
+
+    def test_csv_round_trip(self, tmp_path):
+        path = tmp_path / "neurons.csv"
+        df = pd.DataFrame({"neuron_id": [1, 2, 3], "type": ["KC", "KC", "PN"]})
+
+        ds = Dataset(name="neurons", ftype="csv")
+        ds.save(df, path)
+        assert path.exists()
+
+        loaded = ds.load(path)
+        assert list(loaded.columns) == ["neuron_id", "type"]
+        assert len(loaded) == 3
+
+    def test_tsv_round_trip(self, tmp_path):
+        path = tmp_path / "annotations.tsv"
+        df = pd.DataFrame({"root_id": [100, 200], "neuropil": ["MB", "AL"]})
+
+        ds = Dataset(name="annotations", ftype="tsv")
+        ds.save(df, path)
+        loaded = ds.load(path)
+        assert len(loaded) == 2
+
+    def test_local_dataset_loads_from_origin(self, tmp_path):
+        path = tmp_path / "data.csv"
+        pd.DataFrame({"x": [1, 2]}).to_csv(path, index=False)
+
+        ds = LocalDataset(name="auto", ftype="csv", origin=path)
+        val = ds.value
+        assert len(val) == 2
+
+    def test_with_data(self):
+        ds = Dataset(name="inmem", ftype="csv")
+        df = pd.DataFrame({"a": [1]})
+        ds.with_data(df)
+        assert len(ds.value) == 1
+
+
+class TestGeneratedDataset:
+    """Derived datasets compute from inputs."""
+
+    def test_generate_from_inputs(self):
+        src = Dataset(name="source", ftype="csv").with_data(
+            pd.DataFrame({"n": [10, 20, 30]})
+        )
+
+        def double_sum(df):
+            return df["n"].sum() * 2
+
+        gen = GeneratedDataset(
+            name="doubled", ftype="csv",
+            inputs=[src],
+            computation=double_sum,
+        )
+        assert gen.value == 120
+
+
+class TestEvaluateDatasets:
+    """The @evaluate_datasets decorator unwraps .value transparently."""
+
+    def test_unwraps_dataset_arg(self):
+        @evaluate_datasets
+        def add_column(df, col_name):
+            df = df.copy()
+            df[col_name] = 0
+            return df
+
+        ds = Dataset(name="test", ftype="csv").with_data(
+            pd.DataFrame({"x": [1, 2]})
+        )
+        result = add_column(ds, "new_col")
+        assert "new_col" in result.columns
+
+    def test_passes_raw_data_through(self):
+        @evaluate_datasets
+        def noop(x):
+            return x
+
+        assert noop(42) == 42
+        assert noop("hello") == "hello"
+
+    def test_unwraps_kwargs(self):
+        @evaluate_datasets
+        def merge(left, right):
+            return pd.merge(left, right, on="id")
+
+        ds_left = Dataset(name="l", ftype="csv").with_data(
+            pd.DataFrame({"id": [1, 2], "a": [10, 20]})
+        )
+        ds_right = Dataset(name="r", ftype="csv").with_data(
+            pd.DataFrame({"id": [1, 2], "b": [30, 40]})
+        )
+        result = merge(ds_left, right=ds_right)
+        assert "a" in result.columns and "b" in result.columns
+#+end_src
+
+* Key Design Decisions
+
+| Decision                           | Rationale                                                              |
+|------------------------------------+------------------------------------------------------------------------|
+| Drop NexusDataset entirely         | BBP NEXUS is gone. FlyWire uses CAVE, which we'll add as needed.       |
+| Drop CommandedDataset / Slurm      | No HPC. Everything runs on a laptop.                                   |
+| Drop =connsense= plugin system     | Over-engineered for our needs. Plain callables suffice.                |
+| Drop =voxcell= from default loaders | Fly brain data is meshes + tables, not voxel grids.                   |
+| Add =tsv= loader                   | FlyWire annotations are tab-separated.                                 |
+| Print-based logger, not =logging=  | Jupyter visibility. We can always switch later.                        |
+| =.value= as property, not =lazy=  | Avoid the =lazy= package dependency. Property + =_value= cache works. |
+
+* Testing
+
+Run the tests:
+
+#+begin_src bash :tangle no
+cd /path/to/bravli
+pytest tests/test_dataset.py -v
+#+end_src
+
+Expected: all tests pass. The dataset hierarchy creates, loads, saves, generates, and
+unwraps correctly.
+
+* Exercises for the Reader
+
+1. *Add a JSONDataset*: Create a =LocalDataset= pointing to a JSON file. Load it,
+   inspect =.value=, and verify =.define()= captures the origin path.
+
+2. *Chain GeneratedDatasets*: Create two =GeneratedDataset= objects where the second
+   depends on the first. Verify that accessing the second's =.value= triggers both
+   computations.
+
+3. *Explore the decorator boundary*: What happens if you pass a =GeneratedDataset=
+   whose computation raises an error to an =@evaluate_datasets=-wrapped function?
+   Where does the error surface? Is this the right behavior?
+
+4. *Design a FlyWireDataset*: Sketch (don't implement yet) what a =FlyWireDataset=
+   subclass would look like — one that fetches data from the CAVE API. What fields
+   would it need? How would =.value= work?
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 00-foundations
+tag: lesson/00-foundations
+files_created:
+  - bravli/__init__.py
+  - bravli/bench/__init__.py
+  - bravli/bench/dataset.py
+  - bravli/utils/__init__.py
+  - bravli/utils/logging.py
+  - tests/test_dataset.py
+verification:
+  - "pip install -e '.' succeeds"
+  - "python -c 'from bravli.bench import Dataset, evaluate_datasets' succeeds"
+  - "pytest tests/test_dataset.py -v — all tests pass"
+next_lesson: 01-parcellation
+#+end_src
+
+* Local Variables                                                :noexport:
+
+# Local Variables:
+# org-confirm-babel-evaluate: nil
+# End:
