@@ -39,3 +39,8 @@ from .analysis import (
     performance_index,
 )
 from .plasticity import ThreeFactorSTDP
+from .adex_engine import (
+    simulate_adex,
+    AdExParams,
+    ADEX_PRESETS,
+)

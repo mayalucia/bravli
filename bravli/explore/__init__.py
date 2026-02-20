@@ -48,3 +48,8 @@ from .stochastic_synapses import (
     mb_stochastic_experiment,
     stochastic_report,
 )
+from .lif_vs_adex import (
+    compare_models,
+    adaptation_sweep,
+    comparison_report,
+)

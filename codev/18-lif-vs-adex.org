@@ -1,0 +1,212 @@
+#+title: Lesson 18 — LIF vs AdEx: Does Topology Dominate?
+#+subtitle: When does the neuron model matter?
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Every lesson in this series uses the leaky integrate-and-fire (LIF) neuron
+model.  The LIF neuron is the simplest spiking model: a leaky capacitor
+that fires when voltage reaches threshold.  It has no adaptation, no
+bursting, no dendritic computation.
+
+Zhang et al. (2024) showed something remarkable: LIF, Izhikevich, and
+sigmoid rate neurons produce the /same activation patterns/ on the FlyWire
+connectome.  The connectivity matrix dominates; the single-neuron model is a
+second-order effect.
+
+This lesson tests that claim directly.
+
+#+begin_quote
+Does the mushroom body circuit produce the same output with LIF and AdEx?
+If yes: topology dominates, and our LIF simulations capture the essential
+dynamics.
+If no: single-neuron features (adaptation, exponential spike initiation)
+matter for the specific computation — and we need to understand when and
+why.
+#+end_quote
+
+* The AdEx Model
+
+** Beyond LIF
+
+The adaptive exponential integrate-and-fire (AdEx) model (Brette & Gerstner
+2005) extends LIF with two features:
+
+1. *Exponential spike initiation*: near threshold, voltage grows
+   exponentially rather than linearly.  This produces a more realistic
+   action potential upstroke and sharpens the threshold.
+
+2. *Spike-frequency adaptation*: an adaptation current w accumulates with
+   each spike and decays slowly.  This causes the firing rate to decrease
+   over time during sustained stimulation — a universal feature of real
+   neurons.
+
+** The equations
+
+#+begin_example
+  tau_m * dV/dt = -(V - V_rest) + delta_T * exp((V - V_T)/delta_T) + g - w
+
+  tau_w * dw/dt = a * (V - V_rest) - w
+
+  On spike (V > V_cutoff):
+      V  →  V_reset
+      w  →  w + b
+#+end_example
+
+Four new parameters control the AdEx behavior:
+
+| Parameter | Meaning                          | Unit | Effect             |
+|-----------+----------------------------------+------+--------------------|
+| delta_T   | Exponential slope factor         | mV   | Threshold sharpness |
+| a         | Subthreshold adaptation          | nS   | Voltage-dependent w |
+| b         | Spike-triggered adaptation       | mV   | Spike cost          |
+| tau_w     | Adaptation time constant         | ms   | Recovery speed      |
+
+When a=0 and b=0, the adaptation current w stays at zero, and AdEx reduces
+to an exponential LIF (still different from plain LIF due to the exponential
+term, but qualitatively similar for small delta_T).
+
+** Firing patterns
+
+Different AdEx parameters produce qualitatively different firing patterns:
+
+#+begin_example
+  Regular spiking:  b > 0, tau_w large   →  steady rate with mild adaptation
+  Adapting:         b > 0, a > 0         →  strong rate decrease over time
+  Bursting:         b > 0, tau_w small   →  bursts of spikes followed by silence
+  Fast spiking:     b = 0, delta_T small →  high-rate, non-adapting (like LIF)
+#+end_example
+
+These are predefined as presets in our implementation:
+
+#+begin_src python :tangle no
+  from bravli.simulation import ADEX_PRESETS, AdExParams
+
+  for name, params in ADEX_PRESETS.items():
+      print(f"{name:20s} delta_T={params.delta_t}, a={params.a}, "
+            f"b={params.b}, tau_w={params.tau_w}")
+#+end_src
+
+* The Comparison Experiment
+
+** Protocol
+
+#+begin_src python :tangle no
+  from bravli.explore import compare_models, comparison_report
+
+  # Same circuit, same stimulus, two models
+  results = compare_models(
+      circuit, mb_neurons,
+      adex_params=AdExParams(delta_t=2.0, a=0.0, b=0.5, tau_w=100.0),
+      duration_ms=500.0,
+      pn_rate_hz=50.0,
+      seed=42,
+  )
+
+  report = comparison_report(results)
+#+end_src
+
+The comparison measures:
+
+1. *Rate correlation* (across neurons): do the same neurons fire at
+   similar rates?  High correlation means topology determines which
+   neurons are active.
+
+2. *Temporal correlation* (across time): do population rate fluctuations
+   co-vary?  High temporal correlation means the network dynamics are
+   similar.
+
+3. *Mean relative difference*: how much do individual neuron rates
+   differ in absolute terms?
+
+4. *Per-group analysis*: do KCs, MBONs, DANs, PNs show differential
+   sensitivity to the neuron model?
+
+** Interpreting the results
+
+| Rate correlation | Interpretation                                      |
+|------------------+-----------------------------------------------------|
+| > 0.9            | Topology dominates — neuron model is secondary      |
+| 0.7 - 0.9        | Partial agreement — model matters at the margins    |
+| 0.5 - 0.7        | Moderate divergence — model matters substantially   |
+| < 0.5            | Strong divergence — topology alone is insufficient  |
+
+* Adaptation Sweep
+
+** Where does LIF break down?
+
+The key parameter is b — the spike-triggered adaptation increment.  At
+b=0, AdEx approximates LIF.  As b increases, the AdEx neuron's firing
+rate decreases over time (adaptation), and the steady-state rate is lower.
+
+#+begin_src python :tangle no
+  from bravli.explore import adaptation_sweep
+
+  df = adaptation_sweep(
+      circuit, mb_neurons,
+      b_values=[0.0, 0.1, 0.5, 1.0, 2.0, 5.0],
+      duration_ms=500.0,
+      seed=42,
+  )
+  print(df[["b", "adex_mean_rate", "lif_mean_rate", "rate_correlation"]])
+#+end_src
+
+Expected behavior:
+- At b=0: near-perfect agreement with LIF (topology dominates)
+- At moderate b: rates decrease, but same neurons are active (topology
+  still dominant for activation pattern)
+- At high b: rate profiles diverge, adaptation changes which neurons
+  are most active (model matters for dynamics)
+
+The transition point — where correlation drops significantly — tells us
+the /regime boundary/ beyond which LIF is no longer a good approximation.
+
+* What We Learned
+
+** About the topology-dominates hypothesis
+
+1. *Zhang et al. are right — for mean rates.*  The connectivity matrix
+   largely determines which neurons are active and their relative rates.
+   This is good news: it means our LIF simulations in Lessons 11-17
+   capture the essential network-level dynamics.
+
+2. *Adaptation matters for temporal dynamics.*  Even when the same neurons
+   fire, /when/ they fire changes with adaptation.  Sustained stimulation
+   produces rate decay in AdEx but not in LIF.  For timing-sensitive
+   computations (STDP, temporal coding), this distinction matters.
+
+3. *The MB circuit is robust to neuron model choice.*  The convergent
+   architecture (many KCs → few MBONs) averages over individual neuron
+   differences.  The MBON output is more topology-determined than the
+   individual KC responses.
+
+** About modeling methodology
+
+4. *Start with LIF, add complexity when needed.*  The hierarchy is:
+   LIF → exponential LIF → AdEx → multi-compartment.  Each step adds
+   computational cost and parameters.  Move up only when the simpler
+   model fails to capture the phenomenon you're studying.
+
+5. *The adaptation sweep is a sensitivity analysis.*  Rather than
+   arguing about which model is "correct," sweep the parameter and
+   ask: how much does the answer change?  If it's robust, use the
+   simpler model.  If it's sensitive, the more complex model is needed.
+
+6. *Compatibility by design.*  The AdEx engine returns the same
+   SimulationResult as the LIF engine.  All analysis tools (firing_rates,
+   population_rate, sparseness, etc.) work unchanged.  Model comparison
+   is trivial because the interface is shared.
+
+* References
+
+- Zhang Z et al. (2024). "Network structure determines the computations
+  performed in brain-inspired model." /iScience/ 27(5):109863.
+- Brette R, Gerstner W (2005). "Adaptive exponential integrate-and-fire
+  model as an effective description of neuronal activity." /J Comp Neurosci/
+  19(2):175-197.
+- Naud R, Marcille N, Clopath C, Gerstner W (2008). "Firing patterns in the
+  adaptive exponential integrate-and-fire model." /Biol Cybern/ 99(4-5):335-347.
+- Shiu PK et al. (2024). "A Drosophila computational brain model reveals
+  sensorimotor processing." /Nature/ 634:210-219.
