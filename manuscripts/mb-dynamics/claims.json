@@ -1,0 +1,202 @@
+{
+  "sections": [
+    {
+      "id": "result_1",
+      "org_heading": "The FlyWire Mushroom Body Operates in the Balanced State",
+      "claims": [
+        {
+          "id": "r1_c1",
+          "text": "Brunel phase diagram recovers four regimes (SR, SI, AR, AI)",
+          "marker": "parameter sweep on random networks recovers all four regimes",
+          "tests": ["test_brunel.py::test_classification_keys", "test_brunel.py::test_sweep_has_all_points"]
+        },
+        {
+          "id": "r1_c2",
+          "text": "AI/SI boundary shifts to higher g with exponential synaptic filtering",
+          "marker": "AI/SI boundary shifts to higher",
+          "tests": ["test_brunel.py::test_cv_increases_with_g"]
+        },
+        {
+          "id": "r1_c3",
+          "text": "CV suppressed by exponential filter (CV ~0.25 at g=8 vs ~0.8 with delta synapses)",
+          "marker": "CV reaches only.*0\\.25",
+          "tests": ["test_brunel.py::test_cv_increases_with_g"]
+        },
+        {
+          "id": "r1_c4",
+          "text": "Effective weight scaling J_eff = J * tau_m / tau_syn compensates for reduced peak current",
+          "marker": "effective weight scaling",
+          "tests": ["test_brunel.py::test_weight_ratio", "test_brunel.py::test_nu_thr_formula"]
+        },
+        {
+          "id": "r1_c5",
+          "text": "FlyWire MB operates in the asynchronous irregular (AI) balanced regime",
+          "marker": "places the MB in the.*asynchronous",
+          "tests": ["test_brunel.py::test_classify_flywire"]
+        },
+        {
+          "id": "r1_c6",
+          "text": "Network construction: 80% excitatory, 20% inhibitory neurons",
+          "marker": "80.*excitatory.*20.*inhibitory",
+          "tests": ["test_brunel.py::test_build_network", "test_brunel.py::test_ei_ratio"]
+        },
+        {
+          "id": "r1_c8",
+          "text": "Below-threshold drive produces quiescent state",
+          "marker": "quiescent",
+          "tests": ["test_brunel.py::test_quiescent_regime"]
+        }
+      ]
+    },
+    {
+      "id": "result_2",
+      "org_heading": "Neuromodulation Reconfigures Behavioural Output Without Rewiring",
+      "claims": [
+        {
+          "id": "r2_c1",
+          "text": "Five modulatory states tested (naive, appetitive, aversive, aroused, quiescent)",
+          "marker": "five modulatory states",
+          "tests": ["test_neuromodulation.py::test_predefined_states_exist"]
+        },
+        {
+          "id": "r2_c2",
+          "text": "Appetitive and aversive states produce opposite-sign valence scores",
+          "marker": "opposite-sign valence",
+          "tests": ["test_neuromodulation.py::test_valence_shifts_with_state", "test_neuromodulation.py::test_appetitive_and_aversive_are_complementary"]
+        },
+        {
+          "id": "r2_c3",
+          "text": "Purely multiplicative gain modulation (no rewiring, no structural plasticity)",
+          "marker": "multiplicative gain modulation.*no synaptic rewiring",
+          "tests": ["test_neuromodulation.py::test_gain_multiplies_weights", "test_neuromodulation.py::test_apply_and_restore"]
+        },
+        {
+          "id": "r2_c4",
+          "text": "Gain factors m_c = 0.6-1.5 within physiological range",
+          "marker": "gain factors.*within the physiological range",
+          "tests": ["test_neuromodulation.py::test_appetitive_enhances_appetitive_compartments", "test_neuromodulation.py::test_aversive_enhances_aversive_compartments"]
+        },
+        {
+          "id": "r2_c5",
+          "text": "Aroused state amplifies both appetitive and aversive responses",
+          "marker": "aroused state amplifies",
+          "tests": ["test_neuromodulation.py::test_different_states_different_rates"]
+        },
+        {
+          "id": "r2_c6",
+          "text": "Quiescent state uniformly suppresses output",
+          "marker": "quiescent state uniformly",
+          "tests": ["test_neuromodulation.py::test_different_states_different_rates"]
+        },
+        {
+          "id": "r2_c7",
+          "text": "Weights restored after experiment (no permanent modification)",
+          "marker": "connectome defines the space of possible behaviours",
+          "tests": ["test_neuromodulation.py::test_weights_restored_after_experiment", "test_neuromodulation.py::test_naive_state_no_change"]
+        }
+      ]
+    },
+    {
+      "id": "result_3",
+      "org_heading": "Stochastic Synaptic Transmission Serves Computation",
+      "claims": [
+        {
+          "id": "r3_c1",
+          "text": "Release probability sweep from p=0.1 to p=1.0",
+          "marker": "sweep release probability from",
+          "tests": ["test_stochastic.py::test_release_prob_one_deterministic", "test_stochastic.py::test_release_prob_zero_no_propagation"]
+        },
+        {
+          "id": "r3_c2",
+          "text": "At p=0.5 relative KC activation pattern is preserved",
+          "marker": "relative activation pattern",
+          "tests": ["test_stochastic.py::test_low_release_fewer_spikes"]
+        },
+        {
+          "id": "r3_c3",
+          "text": "At p=0.1 odor coding degrades substantially",
+          "marker": "0\\.1.*degrade substantially",
+          "tests": ["test_stochastic.py::test_release_prob_zero_no_propagation"]
+        },
+        {
+          "id": "r3_c4",
+          "text": "SNR exhibits classic inverted-U stochastic resonance profile",
+          "marker": "SNR exhibits the classic inverted-U",
+          "tests": ["test_stochastic.py::test_sr_runs", "test_stochastic.py::test_sr_returns_info"]
+        },
+        {
+          "id": "r3_c5",
+          "text": "Zero noise produces no spikes from subthreshold signal (SNR=0)",
+          "marker": "at zero noise.*subthreshold signal",
+          "tests": ["test_stochastic.py::test_noise_sigma_zero_deterministic", "test_stochastic.py::test_no_noise_no_spontaneous"]
+        },
+        {
+          "id": "r3_c6",
+          "text": "Intermediate noise yields maximum SNR (optimal noise)",
+          "marker": "intermediate noise.*noise fluctuations",
+          "tests": ["test_stochastic.py::test_sr_returns_info"]
+        },
+        {
+          "id": "r3_c7",
+          "text": "Low noise (sigma <= 3) has minimal effect on MBON response patterns",
+          "marker": "Low noise.*has minimal effect",
+          "tests": ["test_stochastic.py::test_mb_experiment_runs"]
+        },
+        {
+          "id": "r3_c8",
+          "text": "High noise (sigma = 10) disrupts sparse KC coding",
+          "marker": "High noise.*disrupts the sparse coding",
+          "tests": ["test_stochastic.py::test_noise_can_cause_spikes", "test_stochastic.py::test_mb_experiment_runs"]
+        }
+      ]
+    },
+    {
+      "id": "result_4",
+      "org_heading": "Topology Dominates: LIF and AdEx Agree When Adaptation Is Weak",
+      "claims": [
+        {
+          "id": "r4_c1",
+          "text": "High rate correlation (r > 0.9) between LIF and AdEx at b=0.5 mV",
+          "marker": "high rate correlation.*>.*0\\.9",
+          "tests": ["test_adex.py::test_compare_runs", "test_adex.py::test_compare_keys"]
+        },
+        {
+          "id": "r4_c2",
+          "text": "Mean relative difference < 10% (excellent quantitative agreement)",
+          "marker": "mean.*relative difference is",
+          "tests": ["test_adex.py::test_compare_keys"]
+        },
+        {
+          "id": "r4_c3",
+          "text": "At b=0 (no adaptation) AdEx reduces to exponential LIF, near-perfect agreement",
+          "marker": "no adaptation.*AdEx reduces to",
+          "tests": ["test_adex.py::test_zero_adaptation_matches_exponential_lif"]
+        },
+        {
+          "id": "r4_c4",
+          "text": "Spike-frequency adaptation progressively suppresses high-rate neurons",
+          "marker": "adaptation progressively suppresses",
+          "tests": ["test_adex.py::test_adaptation_reduces_rate", "test_adex.py::test_sweep_rate_decreases_with_b"]
+        },
+        {
+          "id": "r4_c5",
+          "text": "Four biophysically motivated AdEx presets defined",
+          "marker": "four biophysically motivated presets",
+          "tests": ["test_adex.py::test_presets_exist", "test_adex.py::test_preset_types"]
+        },
+        {
+          "id": "r4_c6",
+          "text": "Adaptation sweep b from 0 to 5 mV reveals clear divergence threshold",
+          "marker": "Sweeping the.*adaptation parameter",
+          "tests": ["test_adex.py::test_sweep_runs"]
+        },
+        {
+          "id": "r4_c7",
+          "text": "At b >= 5 mV, strong divergence (r < 0.5)",
+          "marker": "< 0\\.5.*Strong divergence",
+          "tests": ["test_adex.py::test_sweep_runs", "test_adex.py::test_sweep_rate_decreases_with_b"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,356 @@
+#+TITLE: Executable Manuscripts: A Survey from Knuth to Agentic Science
+#+AUTHOR: mu2tau + Claude
+#+DATE: 2026-02-20
+
+* The Idea and Its Genealogy
+
+The idea that code and explanation should live together — that the
+artifact of science is not a paper /about/ computation but the
+computation /itself/ — has a clear lineage.
+
+** Knuth's Literate Programming (1984)
+
+Donald Knuth's WEB system (1984) is the origin. The core insight:
+programs should be written for /human readers/, with code extracted by
+machine as a secondary operation. WEB introduced two operations:
+*tangle* (extract compilable code) and *weave* (produce typeset
+documentation). CWEB extended this to C/C++.
+
+Knuth's vision was more radical than what followed. WEB had a /macro
+system/ that allowed the author to present code in any order convenient
+for the reader, not the order demanded by the compiler. This is the
+"order of human logic" principle. Almost every modern descendant has
+abandoned this — Jupyter, R Markdown, and Quarto all execute cells
+top-to-bottom in source order. Only Org-babel's noweb references
+preserve the full Knuthian capability.
+
+** Jupyter (2014–present)
+
+IPython notebooks (2011), rebranded as Jupyter (2014), are the dominant
+executable document format in data science. Key properties:
+- Cell-based execution (code + markdown cells)
+- JSON storage format (poor version control)
+- Browser-based interface
+- Rich display protocol (images, HTML, LaTeX inline)
+- Language-agnostic kernel architecture
+
+Jupyter achieved massive adoption but deviated from Knuth's vision in
+important ways: no macro system, no reordering, poor narrative flow,
+and the JSON format makes git diffs nearly useless. The notebook is an
+/exploratory/ tool, not a /publication/ medium.
+
+*Jupyter Book / MyST Markdown* (2020–present) attempts to bridge this
+gap. MyST is a semantic markdown flavor designed for scientific
+publishing, now part of Project Jupyter. Jupyter Book 2 (announced
+FOSDEM 2026) rebuilds the system around MyST-MD with React renderers,
+Typst PDF output, and JATS XML for scholarly publishing. SciPy
+Proceedings 2024 and 2025 both used this stack.
+
+** R Markdown / Quarto (2012–present)
+
+R Markdown (knitr + pandoc) brought literate programming to
+statisticians. Quarto (2022, from Posit/RStudio) generalises this to
+Python, Julia, and Observable JS. Key innovation: a single source
+format that renders to HTML, PDF, Word, ePub, and reveal.js. Quarto
+manuscripts support cross-references, citations, and journal templates.
+
+Like Jupyter, Quarto executes top-to-bottom. Unlike Jupyter, source
+files are plain text (excellent version control). Quarto is currently
+the most polished /authoring/ tool for computational manuscripts.
+
+** Org-mode + Babel (2003–present)
+
+Org-mode (Carsten Dominik, 2003) in Emacs, with Babel (Eric Schulte,
+2009), is the closest living descendant of Knuth's full vision:
+
+- *Plain text*: perfect version control
+- *Noweb references*: code blocks can be composed in any order, with
+  named blocks referenced by other blocks — Knuth's "order of human
+  logic" preserved
+- *80+ languages*: polyglot in a single document
+- *Tangle + weave*: =org-babel-tangle= extracts source files,
+  =org-export= produces LaTeX, HTML, ODT, etc.
+- *Session support*: persistent interpreter sessions across blocks
+- *Header arguments*: per-block control of evaluation, output format,
+  variable passing, caching
+- *Integrated ecosystem*: org-ref (citations), org-roam (knowledge
+  graph), org-present (slides), all in one editor
+
+The disadvantage is obvious: it requires Emacs. The learning curve
+filters out most potential users. But for those who climb it, no other
+system offers comparable power for literate scientific programming.
+
+*Assessment*: Org-babel remains the most /technically capable/ literate
+programming system available. It is the only mainstream tool that
+preserves Knuth's full vision. Its weakness is social, not technical:
+the Emacs monoculture limits adoption.
+
+* The Commercial SOTA (2025–2026)
+
+** Curvenote (YC W25, $1.4M seed)
+
+[[https://curvenote.com/][Curvenote]] launched its Scientific Content Management System (SCMS) in
+October 2025. Key claims:
+- Integrates with Jupyter and MyST Markdown
+- Modular, reusable content components
+- Interactive outputs in the browser
+- Journal-quality export (LaTeX, JATS XML)
+- Collaboration features (credit tracking, lab networks)
+
+Curvenote represents the VC-funded bet that /scientific publishing
+infrastructure/ is a viable business. Their SCMS concept — treating
+research artifacts as versionable, composable components rather than
+monolithic PDFs — is architecturally sound. Whether the market exists
+is an open question.
+
+Published in Nature (2024): "A publishing platform that places code
+front and centre."
+
+** Stencila + eLife ERA
+
+[[https://elifesciences.org/labs/dc5acbde/welcome-to-a-new-era-of-reproducible-publishing][eLife's Executable Research Articles (ERA)]], built with Stencila
+(open-source), represent the most ambitious /journal-led/ attempt at
+executable manuscripts:
+- Readers can inspect, modify, and re-execute code in the browser
+- Supports R Markdown and Python
+- Faster loading than Jupyter notebooks
+- Designed for reading experience, not exploration
+- Authors can preview ERAs locally
+
+ERA was announced in 2020, but adoption remains limited. eLife's shift
+to a preprint-review model complicated the ERA pipeline. The
+technology works; the sociology of adoption is the bottleneck.
+
+** Code Ocean
+
+[[https://codeocean.com/][Code Ocean]] takes a different approach: containerised "compute capsules"
+that encapsulate code + data + environment in a Docker image with a
+DOI. Several Nature Research journals use Code Ocean for peer review.
+IEEE has integrated capsules into published articles.
+
+Strengths: true long-term reproducibility (immutable containers),
+institutional adoption. Weakness: the capsule is /adjacent/ to the
+paper, not /the paper itself/. You still read a PDF and separately
+click into a capsule. The narrative and computation are decoupled.
+
+** Nextjournal
+
+[[https://nextjournal.com/][Nextjournal]] offers polyglot notebooks (Python, R, Julia, Clojure) with
+automatic versioning and append-only immutable storage. Each code block
+runs in its own isolated Docker environment. Real-time collaboration,
+DOI assignment, permanent URLs.
+
+Nextjournal is technically impressive but niche. It solves
+reproducibility thoroughly but hasn't achieved mainstream adoption.
+
+** Living Papers (UW IDL, UIST 2023)
+
+[[https://idl.uw.edu/living-papers-paper/living-papers/][Living Papers]] from the UW Interactive Data Lab is the most ambitious
+/academic/ project in this space:
+- Markdown source with executable code (JS, Python via Pyodide/WASM, R)
+- Reactive runtime: interactive components re-evaluate on user input
+- Outputs: static PDF /and/ dynamic web pages from the same source
+- Python runs /in the browser/ via WebAssembly (Pyodide)
+- Extensible component system
+- Backward-compatible: auto-converts interactive content to static for
+  LaTeX/PDF export
+
+This is the closest existing system to what a "living paper" should
+be. The WebAssembly angle is particularly important: it eliminates the
+server dependency that plagues Binder, Code Ocean, and Nextjournal.
+The computation runs client-side.
+
+Limitation: JavaScript-first architecture. Python via Pyodide is
+available but not all libraries work in WASM. No C++ or Fortran
+(yet). Academic project, not a product.
+
+** Quarto Manuscripts (Posit, 2024)
+
+Quarto added a dedicated =manuscript= project type in 2024:
+- Computations embedded alongside narrative
+- Journal templates (Elsevier, JASA, PLoS, etc.)
+- Cross-references, citations (CSL/BibTeX)
+- HTML + PDF + Word from single source
+- GitHub Pages deployment built in
+
+This is the most /practical/ option for a working scientist today who
+wants an executable manuscript with minimal friction. It doesn't run
+in the browser (reader can't re-execute), but the source is
+reproducible and the output is journal-ready.
+
+* The AI-Native Landscape (2025–2026)
+
+This is where things get genuinely new.
+
+** Sakana AI Scientist v2 (2025)
+
+[[https://sakana.ai/ai-scientist-first-publication/][The AI Scientist v2]] is an end-to-end agentic system that:
+- Formulates hypotheses
+- Designs and executes experiments
+- Analyzes and visualizes results
+- Writes complete manuscripts
+- Submits to peer review
+
+In March 2025, an AI Scientist v2 paper was accepted at an ICLR
+workshop — the first fully AI-generated paper to pass human peer
+review (average score 6.33, above acceptance threshold). The paper
+reported a /negative result/ in regularization methods.
+
+This is not an executable manuscript — it's an /automated manuscript
+generator/. The distinction matters. AI Scientist v2 produces
+traditional PDFs. The innovation is in the production pipeline, not
+the publication format.
+
+** Agentic Science Surveys (ICLR 2025)
+
+Two comprehensive surveys frame the emerging field:
+
+1. *"Agentic AI for Scientific Discovery"* (ICLR 2025): categorises
+   systems into autonomous and collaborative frameworks. Key insight:
+   reproducibility and provenance are non-negotiable — agents must
+   record tool versions, parameters, and data lineage.
+
+2. *"From AI for Science to Agentic Science"*: maps the transition
+   from AI-as-tool to AI-as-agent. Identifies the "co-pilot to
+   lab-pilot" transition and its implications for auditability.
+
+** Automated Reproducibility Verification
+
+A 2026 study evaluated multiple LLMs (o3-mini, GPT-4o, Gemini-2.0,
+DeepSeek-R1, Claude 3.5 Sonnet) on their ability to reproduce
+published research. The best-performing model achieved an average
+replication score of *43.4%*. This is both encouraging (non-trivial
+replication without human intervention) and sobering (more than half of
+papers couldn't be replicated by AI).
+
+** AI Research Assistants
+
+Elicit, Semantic Scholar, Consensus, and Perplexity AI represent the
+current generation of AI-powered literature tools. These are /reading/
+tools, not /writing/ or /executing/ tools. They help find and
+summarise papers but don't interact with the computational artifacts.
+
+* What Nobody Has Built Yet
+
+The survey reveals a clear gap. Existing systems fall into three
+categories:
+
+1. *Authoring tools* (Org-babel, Quarto, MyST): help you /write/
+   executable documents. Reader experience is passive — you can read
+   the output, maybe re-run it, but you can't /interrogate/ it.
+
+2. *Execution platforms* (Code Ocean, Binder, Nextjournal): let you
+   /run/ someone else's code. But the code is decoupled from the
+   narrative. You click a "launch Binder" button and leave the paper.
+
+3. *AI agents* (AI Scientist, Agent Laboratory): can /produce/
+   manuscripts autonomously. But the output is a traditional PDF. The
+   agent is in the production pipeline, not in the publication medium.
+
+*What's missing*: a system where the manuscript /is/ the executable
+environment, and AI agents are /native participants/ — not just
+producers or consumers of the document, but entities that can be
+invoked /within/ it to explain, extend, challenge, or replicate the
+claims.
+
+Concretely, nobody has built:
+
+- A document where an AI agent can be asked "re-run Figure 3 with
+  different parameters" and the figure updates in place
+- A publication format where the "Methods" section is literally the
+  executable code, the "Results" section is generated output, and an
+  agent can verify the chain from one to the other
+- A peer review protocol where the reviewer is an agent that clones
+  the repo, runs the tests, modifies assumptions, and produces a
+  structured assessment — not as a one-off experiment (like AI
+  Scientist's self-review) but as a /standard publication workflow/
+
+Living Papers (UW) comes closest on the reader-interaction side.
+AI Scientist v2 comes closest on the agent-production side.
+Nobody has combined them.
+
+* Where Org-mode Stands
+
+Org-babel is still, in 2026, the most powerful single-user literate
+programming system. It does things no commercial tool matches:
+
+| Capability | Org-babel | Jupyter | Quarto | MyST | Living Papers |
+|---------------------------+----------+---------+--------+------+---------------|
+| Knuth-style noweb refs | Yes | No | No | No | No |
+| 80+ languages | Yes | ~50 | ~4 | ~4 | ~3 |
+| Plain text (git-friendly) | Yes | No | Yes | Yes | Yes |
+| LaTeX export | Yes | Partial | Yes | Yes | Yes |
+| HTML export | Yes | Yes | Yes | Yes | Yes |
+| In-browser execution | No | Yes | No | No | Yes (WASM) |
+| Reactive interactivity | No | Partial | No | No | Yes |
+| Agent-native | No | No | No | No | No |
+| Multi-user collaboration | No | Yes | No | No | No |
+
+Org-babel's weaknesses are all /social/ and /distribution/ problems:
+- No browser rendering (requires Emacs)
+- No real-time collaboration
+- No agent integration (yet)
+- Export pipeline depends on Emacs batch mode
+
+Its strengths are all /technical/ and /authorial/:
+- Maximum expressive power for the author
+- Perfect version control
+- True literate programming (not just "notebooks")
+- Unmatched polyglot capability
+
+* Implications for MayaLucia / MayaPortal
+
+The gap in the landscape is clear:
+
+1. *Org-babel for authoring* — nothing better exists for the single
+   expert author. Keep using it.
+
+2. *Portal for distribution* — MayaPortal can render the /output/ of
+   org documents as interactive web content. This is where the browser
+   experience lives. Not as an authoring environment (that's Emacs),
+   but as a /reading and interrogation/ environment.
+
+3. *Agents as native participants* — the novel contribution. Not "AI
+   writes the paper" (Sakana) and not "reader clicks run" (Living
+   Papers), but: the document ships with an agent protocol that any AI
+   can use to verify, extend, and challenge the claims.
+
+The authoring happens in Emacs. The verification happens via agents.
+The experience happens in the Portal. Three layers, three tools, one
+artifact.
+
+Nobody else is building this stack.
+
+* Sources
+
+** Foundational
+- [[https://www-cs-faculty.stanford.edu/~knuth/lp.html][Knuth: Literate Programming]] (1984)
+- [[https://orgmode.org/worg/org-contrib/babel/intro.html][Org-babel: Introducing Babel]]
+- [[https://en.wikipedia.org/wiki/Literate_programming][Wikipedia: Literate Programming]]
+
+** Executable Manuscript Platforms
+- [[https://elifesciences.org/labs/dc5acbde/welcome-to-a-new-era-of-reproducible-publishing][eLife ERA: Welcome to a new ERA of reproducible publishing]]
+- [[https://curvenote.com/][Curvenote: Web-first Scientific Publishing]]
+- [[https://curvenote.com/news/curvenote-seed-round][Curvenote raises $1.4M seed round]] (2025)
+- [[https://www.nature.com/articles/d41586-024-02577-1][Nature: A publishing platform that places code front and centre]] (2024)
+- [[https://codeocean.com/product/compute-capsules][Code Ocean: Compute Capsules]]
+- [[https://nextjournal.com/][Nextjournal: Reproducible Notebooks]]
+- [[https://idl.uw.edu/living-papers-paper/living-papers/][Living Papers: Augmented Scholarly Communication]] (UIST 2023)
+- [[https://quarto.org/][Quarto: Open-source scientific publishing]]
+- [[https://mystmd.org/guide][MyST Markdown Tools]]
+- [[https://2i2c.org/blog/fosdem-jupyter-book-2/][Jupyter Book 2 at FOSDEM 2026]]
+- [[https://proceedings.scipy.org/articles/hwcj9957][Jupyter Book 2 and the MyST Document Stack — SciPy 2025]]
+
+** AI-Native Science
+- [[https://sakana.ai/ai-scientist-first-publication/][Sakana: AI Scientist Generates First Peer-Reviewed Publication]] (2025)
+- [[https://arxiv.org/abs/2504.08066][AI Scientist v2: Workshop-Level Automated Discovery]] (2025)
+- [[https://arxiv.org/html/2503.08979v1][Agentic AI for Scientific Discovery (ICLR 2025 survey)]]
+- [[https://arxiv.org/html/2508.14111v1][From AI for Science to Agentic Science (survey)]]
+- [[https://www.frontiersin.org/journals/artificial-intelligence/articles/10.3389/frai.2025.1649155/full][AI, agentic models and lab automation: the beginning of scAInce]]
+- [[https://www.arxiv.org/pdf/2601.04226][Automated Reproducibility Has a Problem Statement]] (2026)
+
+** Reproducibility Infrastructure
+- [[https://www.frontiersin.org/journals/computer-science/articles/10.3389/fcomp.2024.1491823/full][Reproducible research policies survey]] (Frontiers, 2024)
+- [[https://apertureneuro.org/article/143700][Neurodesk: Reproducible research artefacts]] (Aperture Neuro)
+- [[https://portal.bluebrain.epfl.ch/][Blue Brain Project Portal]]
+- [[https://www.frontiersin.org/journals/physics/articles/10.3389/fphy.2025.1711356/full][Scientific software development in the AI era]] (Frontiers, 2025)
