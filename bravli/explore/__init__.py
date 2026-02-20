@@ -24,3 +24,11 @@ from .conditioning_experiment import (
     aversive_conditioning,
     conditioning_report,
 )
+from .brunel_network import (
+    build_brunel_network,
+    build_brunel_stimulus,
+    classify_regime,
+    brunel_phase_sweep,
+    classify_flywire_regime,
+    brunel_report,
+)

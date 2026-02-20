@@ -15,6 +15,16 @@ codev/02-composition.org     # Cell type counts, neurotransmitter profiles
 codev/03-factology.org       # Structured measurement system
 codev/04-visualization.org   # 3D rendering via navis
 codev/05-explore-mushroom-body.org  # Integration walkthrough
+codev/06-atlas.org           # Brain atlas and neuropil geometry
+codev/07-plan-fly-brain-2026.org  # Research roadmap
+codev/08-connectivity.org    # Synaptic connectivity analysis
+codev/09-synaptic-physiology.org  # Synapse models and neurotransmitters
+codev/10-cell-models.org     # LIF and graded cell models
+codev/11-simulation.org      # LIF simulation engine
+codev/12-portal.org          # Interactive digital twin portal
+codev/13-mushroom-body-circuit.org  # MB microcircuit extraction + sparseness
+codev/14-isn-and-learning.org # ISN regime + three-factor STDP conditioning
+codev/15-brunel-phase-diagram.org  # Brunel phase diagram + FlyWire regime
 ```
 
 ## Quick start
