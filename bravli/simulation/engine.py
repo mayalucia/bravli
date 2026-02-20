@@ -62,7 +62,8 @@ class SimulationResult:
 
 def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
              record_v=False, record_idx=None, seed=None,
-             plasticity_fn=None):
+             plasticity_fn=None,
+             noise_sigma=0.0, release_prob=1.0):
     """Run a LIF simulation.
 
     Parameters
@@ -88,16 +89,29 @@ def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
         plasticity_fn(step, t, dt, spiked, v, g, circuit)
         May mutate circuit.weights in-place for online learning.
         If None, no plasticity (default — all existing behavior unchanged).
+    noise_sigma : float
+        Standard deviation of Gaussian intrinsic noise current (mV/sqrt(ms)).
+        Added to each neuron's conductance each timestep as
+        sigma * sqrt(dt) * N(0,1). Default 0.0 (no noise).
+    release_prob : float or np.ndarray
+        Synaptic release probability. Each spike transmission succeeds
+        with probability release_prob (Bernoulli trial). Scalar or
+        per-synapse array. Default 1.0 (deterministic).
 
     Returns
     -------
     SimulationResult
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.RandomState(seed)
 
     n = circuit.n_neurons
     n_steps = int(duration / dt)
+
+    # Stochastic synapse parameters
+    use_noise = noise_sigma > 0.0
+    noise_scale = noise_sigma * np.sqrt(dt) if use_noise else 0.0
+    use_failure = not (np.isscalar(release_prob) and release_prob >= 1.0)
+    release_prob_arr = np.asarray(release_prob) if use_failure else None
 
     # --- State arrays ---
     v = circuit.v_rest.copy()
@@ -150,18 +164,33 @@ def simulate(circuit, duration=1000.0, dt=0.1, stimulus=None,
         # 1. Synaptic decay
         g *= decay_g
 
-        # 2. Deliver spikes from delay buffer
+        # 2. Deliver spikes from delay buffer (with optional release failure)
         buf_slot = step % (delay + 1)
         delayed_spikes = spike_buffer[buf_slot]
         if np.any(delayed_spikes):
             firing_mask = delayed_spikes[pre_idx]
             if np.any(firing_mask):
-                np.add.at(g, post_idx[firing_mask], weights[firing_mask])
+                if use_failure:
+                    # Bernoulli trial: each synapse transmits with release_prob
+                    firing_indices = np.where(firing_mask)[0]
+                    if np.isscalar(release_prob):
+                        released = rng.random(len(firing_indices)) < release_prob
+                    else:
+                        released = rng.random(len(firing_indices)) < release_prob_arr[firing_indices]
+                    transmitted = firing_indices[released]
+                    if len(transmitted) > 0:
+                        np.add.at(g, post_idx[transmitted], weights[transmitted])
+                else:
+                    np.add.at(g, post_idx[firing_mask], weights[firing_mask])
         spike_buffer[buf_slot] = False  # clear after reading
 
         # 3. External stimulus
         if stimulus is not None:
             g += stimulus[:, step]
+
+        # 3.5. Intrinsic noise current
+        if use_noise:
+            g += noise_scale * rng.randn(n)
 
         # 4. Voltage update (Euler)
         not_refractory = (t >= refractory_until)

@@ -1,0 +1,251 @@
+#+title: Lesson 17 — Stochastic Synapses
+#+subtitle: When noise is not nuisance
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Every simulation so far has treated synaptic transmission as reliable: a
+presynaptic spike always produces a postsynaptic effect.  This is wrong.
+
+#+begin_quote
+Central synapses fail 50-90% of the time.  This is not sloppiness — it is
+actively maintained.
+  — Allen & Stevens (1994)
+#+end_quote
+
+A cortical synapse releases neurotransmitter with probability p ≈ 0.1-0.5.
+The fly's KC→MBON synapses have similar unreliability.  If evolution has
+maintained this for hundreds of millions of years, it must serve a purpose.
+Three hypotheses:
+
+1. *Energy efficiency*: vesicle recycling is metabolically expensive.
+   Probabilistic release reduces the energy budget without destroying
+   the population code (many synapses compensate for individual failures).
+
+2. *Decorrelation*: independent Bernoulli trials at each synapse break
+   correlations between neurons that share presynaptic partners.  This
+   increases the effective dimensionality of population activity.
+
+3. *Gain control*: neuromodulators that change release probability can
+   tune the effective strength of a pathway without changing the number
+   of synapses.  This connects to Lesson 16 (Marder's principle).
+
+This lesson adds two noise mechanisms to the simulation engine and asks:
+how does stochasticity change network dynamics?  And does optimal noise
+actually /enhance/ signal detection (stochastic resonance)?
+
+* The Mechanisms
+
+** Synaptic release failure
+
+Each spike transmission is a Bernoulli trial:
+
+#+begin_example
+  With probability p:   spike is transmitted (weight added to g)
+  With probability 1-p: spike fails (nothing happens)
+#+end_example
+
+The release probability p can be:
+- Scalar: same for all synapses (simplest model)
+- Per-synapse: different p at each synapse (more biologically accurate)
+
+In the engine, this is controlled by the ~release_prob~ parameter:
+
+#+begin_src python :tangle no
+  from bravli.simulation import simulate
+
+  # Deterministic (default)
+  result = simulate(circuit, stimulus=stim, release_prob=1.0)
+
+  # 50% failure rate (Allen & Stevens 1994 range)
+  result = simulate(circuit, stimulus=stim, release_prob=0.5)
+
+  # Per-synapse release probabilities
+  p = np.random.uniform(0.1, 0.5, size=circuit.n_synapses)
+  result = simulate(circuit, stimulus=stim, release_prob=p)
+#+end_src
+
+** Intrinsic noise current
+
+Gaussian white noise added to each neuron's synaptic conductance:
+
+#+begin_example
+  g(t) += sigma * sqrt(dt) * N(0,1)
+#+end_example
+
+The scaling by sqrt(dt) ensures the noise has the correct statistical
+properties regardless of timestep (Wiener process convention).
+
+#+begin_src python :tangle no
+  # No noise (default)
+  result = simulate(circuit, stimulus=stim, noise_sigma=0.0)
+
+  # Moderate noise
+  result = simulate(circuit, stimulus=stim, noise_sigma=5.0)
+
+  # Both mechanisms together
+  result = simulate(circuit, stimulus=stim,
+                    noise_sigma=3.0, release_prob=0.3)
+#+end_src
+
+** Implementation in the engine
+
+Both mechanisms require minimal changes to the simulation loop:
+
+1. Release failure: after identifying which synapses would fire, draw
+   Bernoulli trials and only transmit the successes
+2. Intrinsic noise: after external stimulus injection, add Gaussian
+   noise to the conductance
+
+When ~noise_sigma=0~ and ~release_prob=1.0~ (defaults), both code
+paths are skipped entirely — zero cost to existing simulations.
+
+* Experiments
+
+** Noise sweep
+
+How does intrinsic noise level affect network dynamics?
+
+#+begin_src python :tangle no
+  from bravli.explore import noise_sweep
+
+  df = noise_sweep(
+      circuit,
+      stimulus=stim,
+      noise_sigmas=[0, 0.5, 1, 2, 5, 10, 20],
+      duration_ms=500.0,
+  )
+  print(df[["noise_sigma", "mean_rate", "active_fraction"]])
+#+end_src
+
+Expected behaviors:
+- Low noise: minimal effect on driven circuits, noise-induced spikes
+  in undriven neurons
+- Moderate noise: increased firing rate, more neurons active, higher
+  variability (CV of rates increases)
+- High noise: all neurons fire due to noise alone, obscuring the signal
+
+** Release probability sweep
+
+How robust is the circuit to synaptic failure?
+
+#+begin_src python :tangle no
+  from bravli.explore import release_prob_sweep
+
+  df = release_prob_sweep(
+      circuit,
+      stimulus=stim,
+      release_probs=[0.1, 0.2, 0.3, 0.5, 0.7, 1.0],
+      duration_ms=500.0,
+  )
+  print(df[["release_prob", "mean_rate", "active_fraction"]])
+#+end_src
+
+A circuit that degrades gracefully with release failure is more
+biologically plausible than one that collapses.  The MB circuit's
+high KC fan-in to MBONs (many KCs → few MBONs) should make it
+robust: even with 50% failure, enough KC→MBON synapses transmit
+to drive MBON firing.
+
+** Stochastic resonance
+
+The most surprising prediction: noise can /improve/ signal detection.
+
+#+begin_src python :tangle no
+  from bravli.explore import stochastic_resonance_test
+
+  # Weak subthreshold periodic signal
+  df, info = stochastic_resonance_test(
+      circuit,
+      signal_indices=np.arange(10),
+      signal_amplitude=3.0,  # subthreshold
+      noise_sigmas=[0, 0.5, 1, 2, 3, 5, 7, 10, 15, 20],
+      signal_frequency_hz=5.0,
+      duration_ms=2000.0,
+  )
+  print(df[["noise_sigma", "snr", "mean_rate"]])
+  print(f"Best noise: sigma = {info['best_sigma']}")
+#+end_src
+
+The mechanism: a subthreshold periodic signal alone cannot trigger
+spikes.  But add noise, and some noise fluctuations push the
+membrane potential above threshold — preferentially on the upswing
+of the periodic signal (when the neuron is closest to threshold).
+The spikes become phase-locked to the signal, creating a detectable
+periodic component in the population rate.
+
+Too little noise: no spikes at all (signal invisible).
+Too much noise: spikes at random times (signal drowned).
+Optimal noise: spikes preferentially on the signal peaks (resonance).
+
+** MB-specific experiment
+
+#+begin_src python :tangle no
+  from bravli.explore import mb_stochastic_experiment, stochastic_report
+
+  results = mb_stochastic_experiment(
+      circuit, mb_neurons,
+      noise_sigmas=[0, 1, 3, 5, 10],
+      release_probs=[0.1, 0.3, 0.5, 0.7, 1.0],
+      duration_ms=500.0,
+  )
+  stochastic_report(mb_results=results)
+#+end_src
+
+This measures how noise and failure affect the MB's odor coding:
+- Does KC sparseness change?
+- Are MBONs robust to synaptic failure?
+- Is there an optimal noise level for odor discrimination?
+
+* What We Learned
+
+** About noise in neural circuits
+
+1. *Synaptic failure is not a defect.*  Circuits evolved with unreliable
+   synapses.  The MB's convergent architecture (many KCs → few MBONs)
+   provides natural redundancy that compensates for individual failures.
+
+2. *Noise changes the dynamical regime.*  Adding intrinsic noise to a
+   quiescent circuit can push it into an active state.  This is not
+   artifact — it's how subthreshold inputs are detected in real neurons.
+
+3. *Stochastic resonance is a real phenomenon.*  There exists an optimal
+   noise level for detecting weak periodic signals.  Whether biological
+   circuits exploit this is debated, but the mechanism is present in any
+   threshold-crossing system with noise.
+
+** About our simulator
+
+4. *The engine now supports three sources of variability.*  External
+   stimulus (Poisson input), intrinsic noise (Gaussian current), and
+   synaptic failure (Bernoulli trials).  These can be combined freely.
+
+5. *Defaults preserve backward compatibility.*  With noise_sigma=0 and
+   release_prob=1.0, the engine behaves identically to before.  All 258
+   existing tests pass without modification.
+
+6. *Per-synapse release probability enables heterogeneous reliability.*
+   Different synapse types (KC→MBON, PN→KC, APL→KC) can have different
+   failure rates, reflecting their different neurotransmitter release
+   properties.
+
+** About the methodology
+
+7. *Sweep before theorize.*  Rather than assuming noise is harmful or
+   beneficial, we sweep the parameter space and let the data speak.
+   The noise sweep and release probability sweep are the experimental
+   equivalent of a phase diagram — they map out the territory before
+   making claims.
+
+* References
+
+- Allen C, Stevens CF (1994). "An evaluation of causes for unreliability of
+  synaptic transmission." /PNAS/ 91(22):10380-10383.
+- Faisal AA, Selen LP, Wolpert DM (2008). "Noise in the nervous system."
+  /Nature Rev Neurosci/ 9:292-303.
+- Longtin A (1993). "Stochastic resonance in neuron models." /J Stat Phys/
+  70(1):309-327.
+- Gammaitoni L, Hanggi P, Jung P, Marchesoni F (1998). "Stochastic resonance."
+  /Rev Mod Phys/ 70(1):223-287.

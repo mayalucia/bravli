@@ -41,3 +41,10 @@ from .neuromodulation import (
     dose_response,
     neuromodulation_report,
 )
+from .stochastic_synapses import (
+    noise_sweep,
+    release_prob_sweep,
+    stochastic_resonance_test,
+    mb_stochastic_experiment,
+    stochastic_report,
+)

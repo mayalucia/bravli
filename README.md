@@ -26,6 +26,7 @@ codev/13-mushroom-body-circuit.org  # MB microcircuit extraction + sparseness
 codev/14-isn-and-learning.org # ISN regime + three-factor STDP conditioning
 codev/15-brunel-phase-diagram.org  # Brunel phase diagram + FlyWire regime
 codev/16-neuromodulatory-switching.org  # Neuromodulatory state switching (Marder's principle)
+codev/17-stochastic-synapses.org  # Stochastic synapses, noise, and resonance
 ```
 
 ## Quick start
