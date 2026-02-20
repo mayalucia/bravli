@@ -32,3 +32,12 @@ from .brunel_network import (
     classify_flywire_regime,
     brunel_report,
 )
+from .neuromodulation import (
+    MODULATORY_STATES,
+    apply_modulatory_state,
+    restore_weights,
+    compute_valence_score,
+    state_switching_experiment,
+    dose_response,
+    neuromodulation_report,
+)

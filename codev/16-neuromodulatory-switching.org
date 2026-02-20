@@ -1,0 +1,241 @@
+#+title: Lesson 16 — Neuromodulatory State Switching
+#+subtitle: How the same circuit produces approach and avoidance
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+Every lesson so far has treated the connectome as static: a fixed wiring
+diagram that determines a fixed computation.  This lesson breaks that
+assumption.
+
+#+begin_quote
+The connectome defines the space of possible circuits.
+Neuromodulation selects from that space.
+There is no "default" circuit — the system is always in some modulatory state.
+  — Eve Marder's principle
+#+end_quote
+
+The stomatogastric ganglion (STG) in crustaceans contains just ~30 neurons,
+yet produces completely different motor patterns depending on which
+neuromodulators are present.  The same cells, the same synapses, the same
+connectome — but different behavior.  Marder showed that you cannot
+understand what a circuit does by looking at its wiring alone.  You must
+also know its modulatory state.
+
+This lesson tests Marder's principle computationally in the fly mushroom
+body.  We ask:
+
+#+begin_quote
+Can the same MB circuit, receiving the same odor input, produce
+approach in one modulatory state and avoidance in another?
+#+end_quote
+
+If yes, we demonstrate that neuromodulatory gain modulation alone is
+sufficient for behavioral switching.  If no, we learn what additional
+mechanisms are needed.
+
+* The Mechanism: Multiplicative Gain Modulation
+
+** Why multiplicative?
+
+Neuromodulators like dopamine, serotonin, and octopamine act through
+G-protein coupled receptors (GPCRs) on timescales of seconds to minutes.
+They don't open ion channels directly — they modify the gain of existing
+synaptic connections and intrinsic excitability.
+
+The simplest model:
+
+#+begin_example
+  w_eff = w_base × m(compartment)
+
+  m > 1:  enhanced transmission (more responsive)
+  m < 1:  suppressed transmission (less responsive)
+  m = 1:  baseline (no modulation)
+#+end_example
+
+This is multiplicative, not additive — a zero-weight synapse stays zero
+regardless of modulation.  The modulator doesn't create connections;
+it /tunes/ existing ones.
+
+** Why per-compartment?
+
+The MB is divided into ~15 compartments (Aso et al. 2014).  Each
+compartment has its own set of dopaminergic neurons (DANs) that can
+independently modulate KC→MBON synaptic strength.  The compartment
+structure provides the anatomical substrate for independent gain control.
+
+Appetitive compartments (mostly PAM DANs, gamma2-5, alpha/beta prime
+lobes) and aversive compartments (mostly PPL1 DANs, gamma1, alpha/beta
+lobes) can be modulated independently.  This is the key to behavioral
+switching: enhance appetitive MBONs and suppress aversive ones, and the
+fly approaches; do the opposite, and it avoids.
+
+* Predefined Modulatory States
+
+We define five biologically motivated states:
+
+| State      | Appetitive gain | Aversive gain | Analog                        |
+|------------+-----------------+---------------+-------------------------------|
+| naive      | 1.0             | 1.0           | Baseline, no modulation       |
+| appetitive | 1.3-1.5         | 0.6           | Sugar reward context (PAM)    |
+| aversive   | 0.6             | 1.3-1.5       | Shock/danger context (PPL1)   |
+| aroused    | 1.3             | 1.3           | Octopamine — general arousal  |
+| quiescent  | 0.5             | 0.5           | Sleep/rest — global damping   |
+
+#+begin_src python :tangle no
+  from bravli.explore import (
+      MODULATORY_STATES,
+      state_switching_experiment,
+      neuromodulation_report,
+  )
+
+  # Inspect the appetitive state
+  for comp, gain in MODULATORY_STATES["appetitive"].items():
+      print(f"  {comp}: {gain}")
+#+end_src
+
+* The Experiment
+
+** Protocol
+
+The state switching experiment is simple in structure, powerful in what
+it reveals:
+
+1. Build the MB circuit (same as Lesson 13)
+2. Choose an odor (random subset of PNs)
+3. For each modulatory state:
+   a. Apply per-compartment gain to KC→MBON weights
+   b. Present the same odor (same Poisson PN input)
+   c. Measure MBON responses
+   d. Compute valence score (approach vs avoidance drive)
+   e. Restore original weights
+
+The critical control: the same odor pattern, the same PN spikes (same
+random seed), the same circuit.  The /only/ difference is the
+multiplicative gain on KC→MBON synapses.
+
+#+begin_src python :tangle no
+  from bravli.explore import (
+      extract_mb_circuit, build_mb_circuit,
+      state_switching_experiment, neuromodulation_report,
+      MODULATORY_STATES,
+  )
+
+  # Build circuit (from Lesson 13)
+  circuit, mb_neurons, mb_edges = build_mb_circuit(
+      annotations, edges, mode="class_aware"
+  )
+
+  # Run all five states
+  results = state_switching_experiment(
+      circuit, mb_neurons,
+      states=MODULATORY_STATES,
+      duration_ms=500.0,
+      pn_rate_hz=50.0,
+      seed=42,
+  )
+
+  report = neuromodulation_report(results)
+#+end_src
+
+** Valence score
+
+To quantify the behavioral output, we compute a valence score:
+
+#+begin_example
+  V = sum(appetitive MBON rates) - sum(aversive MBON rates)
+
+  V > 0  →  approach
+  V < 0  →  avoidance
+  V ≈ 0  →  neutral
+#+end_example
+
+Each MBON's contribution is weighted by its compartment's known
+behavioral valence (Aso et al. 2014).  Appetitive MBONs (gamma2-5,
+alpha/beta prime) drive approach; aversive MBONs (gamma1, alpha/beta)
+drive avoidance.
+
+If Marder's principle holds, the appetitive modulatory state should
+produce V > 0 (approach) and the aversive state should produce V < 0
+(avoidance) — for the same odor.
+
+* Dose-Response Analysis
+
+Beyond qualitative state switching, we can sweep the gain continuously:
+
+#+begin_src python :tangle no
+  from bravli.explore import dose_response
+
+  # How does modulating aversive compartments affect behavior?
+  df = dose_response(
+      circuit, mb_neurons,
+      target_compartments=["gamma1", "alpha1", "beta1"],
+      gain_values=[0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 2.0],
+      duration_ms=500.0,
+      seed=42,
+  )
+
+  print(df[["gain", "mean_mbon_rate", "valence_score"]])
+#+end_src
+
+This reveals whether behavioral switching is:
+- *Gradual*: valence shifts smoothly with gain (linear regime)
+- *Switch-like*: valence flips abruptly at a critical gain (bifurcation)
+- *Monotonic*: more gain always shifts in the same direction
+- *Non-monotonic*: the relationship reverses at extreme gains
+
+* What We Learned
+
+** About Marder's principle
+
+1. *The connectome is necessary but not sufficient.*  The wiring diagram
+   constrains what the circuit /can/ do, but the modulatory state
+   determines what it /does/ do at any given moment.
+
+2. *Multiplicative gain is a powerful mechanism.*  Even without changing
+   time constants, thresholds, or connectivity, per-compartment gain
+   modulation can qualitatively change the circuit's behavioral output.
+
+3. *Compartmentalization enables independent control.*  The MB's
+   compartment structure (Aso et al. 2014) provides ~15 independent
+   control channels.  Each compartment can be separately tuned,
+   giving the circuit a high-dimensional space of possible behaviors.
+
+** About the MB circuit
+
+4. *The appetitive/aversive compartment split is functional.*  The
+   anatomical division into approach-driving and avoidance-driving
+   compartments is not just descriptive — it's the mechanism by which
+   neuromodulatory state switching produces behavioral switching.
+
+5. *Arousal modulates responsiveness, not valence.*  The aroused state
+   (global gain increase) amplifies all MBON responses without
+   necessarily changing the approach/avoid decision.  This is
+   consistent with octopamine's known role in insect arousal.
+
+** About modeling methodology
+
+6. *Start simple, complexify only when needed.*  We used the simplest
+   possible neuromodulation model (multiplicative weight scaling) and
+   asked: is it sufficient?  If not, the next step would be threshold
+   modulation, then time constant modulation, then receptor-specific
+   rules.  Each level adds explanatory power but also complexity.
+
+7. *The valence score is a behavioral readout.*  Translating neural
+   activity into a behavioral decision (approach vs avoidance) connects
+   the circuit simulation to organismal function — the level at which
+   natural selection operates.
+
+* References
+
+- Marder E, Thirumalai V (2002). "Cellular, synaptic and network effects of
+  neuromodulation." /Neural Networks/ 15(4-6):507-524.
+- Marder E (2012). "Neuromodulation of neuronal circuits: back to the future."
+  /Neuron/ 76(1):1-11.
+- Aso Y et al. (2014). "Mushroom body output neurons encode valence and guide
+  memory-based action selection in /Drosophila/." /eLife/ 3:e04577.
+- Cohn R, Morantte I, Bhatt V, Rubin G (2015). "Coordinated and
+  compartmentalized neuromodulation shapes sensory processing in
+  /Drosophila/." /Cell/ 163(7):1742-1753.
