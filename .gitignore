@@ -28,6 +28,19 @@ output/*.html
 # Jupyter
 .ipynb_checkpoints/
 
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+.auctex-auto/
+.test_results.json
+
 # OS
 .DS_Store
 Thumbs.db
