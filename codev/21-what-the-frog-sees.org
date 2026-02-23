@@ -1,0 +1,495 @@
+#+title: What the Frog Sees
+#+subtitle: Predictive coding in a retinal circuit — the simplest prediction-error computer
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+In 1959, Lettvin, Maturana, McCulloch, and Pitts published one of
+neuroscience's most celebrated papers: "What the Frog's Eye Tells the
+Frog's Brain." They showed that the frog's retina does not relay raw
+pixels to the brain. Instead, four classes of retinal ganglion cells
+extract features: edges, moving objects, dimming events, and —
+crucially — small dark convex objects moving against a stationary
+background. The "bug detector."
+
+Twenty-three years later, Srinivasan, Laughlin, and Dubs reinterpreted
+the retina's center-surround inhibition as *predictive coding*: the
+surround computes a spatial prediction of the center's input, and the
+retinal output IS the prediction error. The retina transmits surprise,
+not sensation.
+
+In this lesson we build the simplest possible predictive coding circuit:
+three populations (photoreceptors, sustained cells, transient cells)
+replicated across a 1D retinal strip. A "bug" — a circle moving through
+a 2D arena — is projected onto this strip, and the circuit separates
+the predictable (background, static features) from the surprising
+(the moving bug). No plasticity, no learning rules, no Bayes — just
+time constants and connectivity.
+
+The connection to Lesson 20 is direct: the frog's sustained cells do
+with slow time constants what cortical SST interneurons do with
+plasticity — track the temporal mean. The transient cells compute what
+cortical E+/E- populations compute — the prediction error. Same
+computation, simpler mechanism. The frog doesn't need to learn because
+its world's statistics are stationary. The cortex needs to learn because
+the statistics change with context.
+
+** Learning Objectives
+
+- [ ] Understand the four ganglion cell classes of Lettvin et al. (1959)
+- [ ] Derive center-surround receptive fields as Difference of Gaussians (DoG)
+- [ ] See why slow τ → temporal mean tracking without plasticity
+- [ ] Build a 3-population retinal circuit that detects moving bugs
+- [ ] Connect retinal prediction errors to cortical UPE (Lesson 20)
+
+** File Map
+
+| File | Role |
+|------+------|
+| =simulation/visual_world.py= | 2D arena, bug trajectories, 1D retinal projection |
+| =applications/retina/frog.py= | Frog retinal circuit builder + experiments |
+| =tests/test_frog.py= | 22 tests |
+
+** Heritage
+
+This lesson sits at the root of the predictive coding tree:
+
+- *Lettvin et al. (1959)*: Feature detection in the frog retina
+- *Barlow (1961)*: Efficient coding hypothesis — the brain minimizes redundancy
+- *Srinivasan, Laughlin & Dubs (1982)*: Retinal center-surround IS predictive coding
+- *Rao & Ballard (1999)*: Hierarchical predictive coding in visual cortex
+- *Wilmes & Senn (2025)*: Uncertainty-modulated prediction errors (Lesson 20)
+
+The progression: retina (fixed connectivity, no learning) → V1 (learned
+receptive fields) → L2/3 cortex (learned mean AND variance). Each level
+adds what the previous level lacks.
+
+* The Science: What the Frog's Eye Tells the Frog's Brain
+
+** Lettvin's Four Ganglion Cell Classes
+
+Lettvin and colleagues recorded from single fibers in the frog's optic
+nerve while presenting visual stimuli. They found four classes:
+
+| Class | Name | Fiber | Response |
+|-------+------+-------+----------|
+| 1 | Sustained contrast detector | Unmyelinated | Edges, local contrast |
+| 2 | Convexity detector (bug detector) | Unmyelinated | Small dark moving objects |
+| 3 | Moving edge detector | Myelinated | Any edge in motion |
+| 4 | Net dimming detector | Myelinated | Rapid darkening |
+
+The remarkable finding: these are NOT raw luminance signals. Each class
+computes a specific function of the visual input. The retina is already
+an information-processing circuit, not a camera.
+
+** The Bug Detector: A Biological Prediction-Error Unit
+
+Class 2 — the convexity detector — is the star. It responds to:
+- Small objects (smaller than receptive field center)
+- Dark objects against lighter background
+- Objects that MOVE relative to the background
+
+It does NOT respond to:
+- Object and background moving together (no relative motion)
+- Large uniform changes in illumination
+- Stationary patterns (after adaptation)
+
+This is prediction-error computation in its purest form. The background
+is the *prediction* (it's what's usually there). The bug is the
+*surprise* (it violates the prediction). The circuit transmits only
+the violation.
+
+** Center-Surround as Spatial Prediction
+
+The retinal receptive field has a center-surround organization:
+an excitatory center flanked by an inhibitory surround. This is well
+modeled as a Difference of Gaussians (DoG):
+
+\begin{equation}
+\text{RF}(d) = \exp\!\left(-\frac{d^2}{2\sigma_c^2}\right) - w_s \exp\!\left(-\frac{d^2}{2\sigma_s^2}\right)
+\end{equation}
+
+where $\sigma_c < \sigma_s$ (center is narrower than surround) and $w_s < 1$
+controls the surround strength.
+
+What does this compute? The surround averages the input over a broad
+spatial region — a *spatial prediction* of what the center should see,
+given its neighbors. The center-minus-surround output is the *spatial
+prediction error*: how much does this location differ from its
+neighborhood?
+
+For uniform illumination, center ≈ surround → output ≈ 0. No surprise.
+For a small spot, center ≫ surround → output is large. Surprise!
+
+** Temporal Filtering: Slow Pathway = Prediction, Fast Pathway = Error
+
+The spatial DoG explains detection of small objects against uniform
+backgrounds. But the bug detector also responds to *motion* — to
+temporal change. This requires temporal prediction.
+
+The mechanism is beautifully simple: two pathways with different
+time constants.
+
+*Sustained pathway* (slow, τ_S ≈ 50 ms):
+\begin{equation}
+\tau_S \frac{dr_S}{dt} = -r_S + \phi\!\left(\sum_j \text{DoG}_{ij} \cdot r_{P_j}\right)
+\end{equation}
+
+The slow time constant makes $r_S$ a *temporal low-pass filter* of its
+input. It tracks the running average — the temporal prediction of "what's
+usually here."
+
+*Transient pathway* (fast, τ_T ≈ 5 ms):
+\begin{equation}
+\tau_T \frac{dr_T}{dt} = -r_T + \phi\!\left(w_{PT} r_P - w_{ST} r_S\right)
+\end{equation}
+
+$T$ receives the raw photoreceptor signal ($P$) minus the sustained
+prediction ($S$). When the scene is static and $S$ has converged to $P$:
+$T \approx P - S \approx 0$. When a bug appears or moves: $P$ changes
+abruptly but $S$ lags behind, so $T = P - S$ fires transiently.
+
+This is exactly the structure of Lesson 20's UPE circuit, but without
+plasticity:
+
+| UPE (Lesson 20) | Frog Retina (this lesson) |
+|------------------+--------------------------|
+| SST learns mean via plasticity | S tracks mean via slow τ |
+| E+/E- compute prediction error | T computes P - S |
+| Adapts to changing statistics | Fixed (stationary world) |
+
+** The Srinivasan-Laughlin Reinterpretation
+
+Srinivasan, Laughlin & Dubs (1982) formalized this precisely: the
+retinal output approximates the *optimal linear predictor* of the center
+signal given the surround, subtracted from the actual center signal.
+
+The optimal surround weights depend on the spatial statistics of natural
+scenes. Natural images have strong spatial correlations ($1/f^2$ power
+spectra), making the surround prediction highly effective. The retinal
+output — the prediction error — has reduced redundancy, making efficient
+use of the limited bandwidth of the optic nerve.
+
+** Efficient Coding: Why Transmit Errors, Not Pixels?
+
+The optic nerve has far fewer fibers than there are photoreceptors.
+Bandwidth is limited. What should it transmit?
+
+If the visual world is spatially correlated (it is — neighboring pixels
+tend to be similar), then raw pixel values are *redundant*. Transmitting
+the prediction error (what's surprising) removes the redundancy, allowing
+the optic nerve to devote its limited dynamic range to the informative
+parts of the signal.
+
+Barlow (1961) called this the *efficient coding hypothesis*: sensory
+neurons should be adapted to the statistics of natural stimuli so as to
+maximize information transmission. Predictive coding achieves this by
+removing the predictable component and transmitting only the residual.
+
+* Implementation Part I: The Visual World
+
+** Arena, Bug, Trajectories
+
+The world is a 2D arena. A "bug" — modeled as a Gaussian luminance
+bump — moves through it. The arena is viewed by a 1D retinal strip
+(a horizontal slice), producing a =(n_pixels, n_steps)= luminance array.
+
+#+begin_src python :tangle -
+@dataclass
+class Arena:
+    width: float = 100.0
+    n_pixels: int = 50
+    background: float = 0.0
+#+end_src
+
+Four trajectory types capture different experimental conditions:
+
+- =straight_trajectory=: constant velocity — the standard moving bug
+- =circular_trajectory=: periodic orbit — tests sustained tracking
+- =random_walk_trajectory=: stochastic — tests response to unpredictable motion
+- =onset_trajectory=: bug appears at a specific time — tests novelty detection
+
+** 1D Retinal Projection
+
+The key simplification: we project the 2D world onto a 1D retinal strip
+by taking the bug's x-coordinate and rendering a Gaussian luminance
+profile centered at that position:
+
+#+begin_src python :tangle -
+def render_retina(arena, bug_positions, bug_radius=2.0):
+    """Project bug onto 1D retinal strip.
+    Returns (n_pixels, n_steps) luminance array."""
+    for each timestep:
+        image[:, t] = background + exp(-0.5 * ((pixel_x - bug_x) / bug_radius)**2)
+#+end_src
+
+This gives us a spatiotemporal luminance pattern that the retinal
+circuit must process. A static bug produces a constant column; a moving
+bug produces a diagonal streak.
+
+* Implementation Part II: The Frog Retinal Circuit
+
+** Three Populations: P, S, T
+
+For a retina with $N$ pixels, we build a =RateCircuit= with $3N$
+populations:
+
+| Population | Index range | τ (ms) | Role |
+|------------+-------------+--------+------|
+| P (photoreceptor) | [0, N) | 2 | Fast luminance relay |
+| S (sustained) | [N, 2N) | 50 | Slow temporal mean (prediction) |
+| T (transient) | [2N, 3N) | 5 | Fast deviation detector (error) |
+
+#+begin_src python :tangle -
+def build_frog_retina(n_pixels=50, params=None) -> RateCircuit:
+    # 3N populations: P, S, T replicated across spatial locations
+    # W encodes: P→S (DoG), P→T (local excitatory), S→T (local inhibitory)
+#+end_src
+
+** The Weight Matrix: DoG Center-Surround
+
+The P→S connectivity is the Difference of Gaussians:
+
+#+begin_src python :tangle -
+def _dog_weights(n_pixels, sigma_c, sigma_s, w_surround):
+    d = pixel_i - pixel_j   # distance matrix
+    center = exp(-d²/2σ_c²)
+    surround = exp(-d²/2σ_s²)
+    return center - w_surround * surround
+#+end_src
+
+With default parameters (σ_c = 1.5 pixels, σ_s = 5.0 pixels,
+w_surround = 0.7), the kernel has:
+- Positive center (self-connection ≈ 0.3)
+- Negative surround (distant connections < 0)
+- Negative row sum (uniform input drives S toward 0)
+
+This means:
+- A localized stimulus excites S (center > surround) → partially predicted
+- Uniform illumination drives S to 0 (center ≈ surround) → fully surprising
+
+** Why Slow τ_S = Temporal Mean Tracking (No Plasticity Needed)
+
+Consider the sustained cell's dynamics:
+
+\begin{equation}
+\tau_S \frac{dr_S}{dt} = -r_S + \phi(I_S)
+\end{equation}
+
+At steady state: $r_S = \phi(I_S)$. The slow time constant ($\tau_S =
+50$ ms) means $r_S$ responds slowly to changes in $I_S$. If the input
+fluctuates faster than $\tau_S$, then $r_S$ tracks the *temporal mean*
+of $\phi(I_S)$.
+
+This is exactly what SST plasticity does in Lesson 20 — learns $\mu$ —
+but through a fundamentally different mechanism:
+
+- SST plasticity: $\Delta w = \eta(r_{SST} - \phi(w \cdot r_a)) \cdot r_a$
+  → weight converges to optimal predictor
+- Sustained τ: $r_S$ low-pass filters input → automatically tracks
+  the mean of whatever it receives
+
+The plasticity mechanism is more powerful (can track changing statistics)
+but slower (needs many trials). The time-constant mechanism is
+instantaneous but rigid (can't adapt to new statistics). The frog doesn't
+need to adapt — bugs always look like bugs. The cortex does — context
+changes what counts as surprising.
+
+** Default Parameters
+
+| Parameter | Symbol | Value | Rationale |
+|-----------+--------+-------+-----------|
+| =tau_P= | $\tau_P$ | 2 ms | Fast relay (photoreceptor time constant) |
+| =tau_S= | $\tau_S$ | 50 ms | Slow enough to average over bug transit time |
+| =tau_T= | $\tau_T$ | 5 ms | Fast response to deviations |
+| =sigma_center= | $\sigma_c$ | 1.5 px | Receptive field center width |
+| =sigma_surround= | $\sigma_s$ | 5.0 px | Receptive field surround width |
+| =surround_weight= | $w_s$ | 0.7 | Surround relative to center |
+| =w_PS= | $w_{P \to S}$ | 1.0 | P→S excitatory (scaled by DoG) |
+| =w_PT= | $w_{P \to T}$ | 1.0 | P→T excitatory (local) |
+| =w_ST= | $w_{S \to T}$ | 1.0 | S→T inhibitory (prediction subtraction) |
+
+* Results: Experiments
+
+** Experiment 1: Static Bug Onset (Novelty Detection)
+
+Setup: empty arena for 100 ms, then a bug appears at the center and
+stays put.
+
+Expected behavior:
+- P: steps from 0 to ~1 at onset, stays constant
+- S: ramps up slowly (τ_S = 50 ms) toward its DoG-filtered steady state
+- T: fires a transient burst at onset (P jumps but S hasn't caught up),
+  then decays as S approaches P. A steady-state residual remains because
+  the DoG cannot perfectly predict a point source.
+
+#+begin_src python :tangle -
+exp = run_frog_experiment("onset", n_pixels=20, duration=800.0,
+                          onset_step=int(100.0 / 0.1),
+                          position=(50.0, 50.0))
+#+end_src
+
+This is the circuit's novelty detection: the bug's appearance violates
+the prediction (empty scene), producing a transient burst. Once the
+sustained pathway catches up, the error signal diminishes.
+
+** Experiment 2: Moving Bug (Tracking)
+
+Setup: bug moves from left to right at constant velocity across the
+retina.
+
+Expected behavior:
+- P: Gaussian bump sweeps across pixels
+- S: smeared, lagging version of P (slow τ can't track fast motion)
+- T: sharp traveling wave, peaks at each pixel as the bug passes
+
+#+begin_src python :tangle -
+exp = run_frog_experiment("straight", n_pixels=30, duration=1000.0,
+                          start=(10.0, 50.0), velocity=(0.08, 0.0))
+#+end_src
+
+The traveling wave of T activity IS the bug detector. At each pixel,
+T fires when the bug arrives (P rises before S can follow). This is
+how the frog's tectum receives a spatiotemporal representation of the
+bug's position — as a wave of prediction errors.
+
+** Experiment 3: Center-Surround as Spatial Prediction
+
+Setup: compare circuit response to a localized spot vs uniform
+illumination.
+
+The DoG center-surround connectivity means:
+- Localized spot: center dominates surround → S > 0 → T = P - S < P
+  (partially predicted)
+- Uniform flash: surround cancels center → S ≈ 0 → T = P - 0 = P
+  (fully surprising)
+
+This seems paradoxical: shouldn't uniform illumination be *less*
+surprising? In the spatial domain, it is — but the DoG is designed for
+a different statistics: natural images, where uniform fields are rare
+and spatial correlations are strong. The DoG predicts "your neighbors
+look similar to you." A localized spot *partially confirms* this
+prediction (neighbors see the edges). Uniform illumination provides
+no local structure to predict from.
+
+This is the difference between spatial and temporal prediction. For
+temporal prediction (the bug detector's primary job), the relevant
+question is "was this pixel active a moment ago?" — and the slow τ
+handles that. For spatial prediction, the question is "do your neighbors
+agree?" — and the DoG handles that. The full retinal circuit does both.
+
+** Experiment 4: Speed Sensitivity (Prediction Horizon)
+
+Setup: run the same moving-bug experiment at different velocities.
+
+Expected: faster bugs produce larger T responses. The transient cell's
+response magnitude reflects how much the stimulus outpaces the sustained
+cell's ability to track it. When the bug moves slowly (much slower than
+τ_S), S can follow and T ≈ 0. When the bug moves fast, S lags behind
+and T is large.
+
+The time constant τ_S sets the *prediction horizon*: the circuit can
+predict (and suppress) changes slower than τ_S, but anything faster
+generates prediction errors. This is a fundamental trade-off — a longer
+τ_S predicts better over slow timescales but misses fast events.
+
+* Discussion: From Frog to Cortex
+
+** The Computational Thread
+
+The progression from retina to cortex is a progression in the
+sophistication of prediction:
+
+| Level | What it predicts | How | Adapts? |
+|-------+------------------+-----+---------|
+| Frog retina | Spatial neighbors, temporal mean | Fixed DoG + slow τ | No |
+| V1 (Rao & Ballard 1999) | Oriented edges, local structure | Learned receptive fields | Slowly |
+| L2/3 cortex (Wilmes & Senn 2025) | Mean AND variance of input | Plastic SST + PV | Yes |
+
+Each level adds what the previous level lacks:
+- The retina can't adapt to new statistics → add plasticity
+- V1 can't weight errors by confidence → add variance tracking (PV)
+- L2/3 UPE gives the optimal Bayesian update signal
+
+** The Time Constant Ladder
+
+A suggestive parallel between our two lessons:
+
+| This lesson | Lesson 20 | Role |
+|-------------+-----------+------|
+| P (τ = 2 ms) | Stimulus input | Raw signal |
+| S (τ = 50 ms) | SST (τ = 2 ms, learns via η) | Mean prediction |
+| T (τ = 5 ms) | E+/E- (τ = 10 ms) | Prediction error |
+| — | PV (τ = 2 ms, quadratic φ) | Variance prediction |
+
+The retina uses a fast-slow time constant pair to separate prediction
+from error. The cortex uses fast dynamics + slow plasticity. Different
+mechanisms, same computational structure.
+
+** What the Frog Cannot Do
+
+The frog's fixed connectivity has a fundamental limitation: it cannot
+adapt to changing statistics. If the background starts moving (the frog
+turns its head), the frog's retinal circuit will fire prediction errors
+everywhere until the sustained cells catch up (a few hundred ms). There
+is no mechanism to *learn* that "backgrounds can move."
+
+Cortical circuits solve this with plasticity: SST and PV weights
+converge to the current statistics, and when the context switches, they
+re-learn. The transient burst at a context switch in Lesson 20's
+Experiment 3 is the cortical analogue of the frog's inability to
+instantly suppress self-motion.
+
+This is the evolutionary pressure for cortex: as an organism's
+environment becomes less stationary, it needs prediction mechanisms that
+can learn and adapt. The frog's retina is evolution's hardcoded
+prediction engine. The cortex is evolution's programmable one.
+
+** Next: Lesson 20's UPE Circuit Adds What the Frog Lacks
+
+The bridge from this lesson to Lesson 20 is precise:
+
+1. Replace the slow time constant with a plastic weight → now the
+   prediction adapts to changing statistics
+2. Add a PV population with quadratic φ → now the circuit tracks
+   not just the mean but the variance
+3. Combine subtractive (SST) and divisive (PV) inhibition → now the
+   prediction error is weighted by precision: UPE = (s − μ)/σ²
+
+The frog sees bugs. The cortex sees uncertainty.
+
+* References
+
+- Lettvin JY, Maturana HR, McCulloch WS, Pitts WH. "What the Frog's
+  Eye Tells the Frog's Brain." /Proc IRE/ 1959, 47(11):1940-1951.
+- Barlow HB. "Possible Principles Underlying the Transformations of
+  Sensory Messages." In /Sensory Communication/, ed. WA Rosenblith, MIT
+  Press, 1961, pp. 217-234.
+- Srinivasan MV, Laughlin SB, Dubs A. "Predictive coding: a fresh view
+  of inhibition in the retina." /Proc R Soc Lond B/ 1982,
+  216(1205):427-459.
+- Rao RPN, Ballard DH. "Predictive coding in the visual cortex: a
+  functional interpretation of some extra-classical receptive-field
+  effects." /Nat Neurosci/ 1999, 2(1):79-87.
+- Wilmes KA, Petrovici MA, Sachidhanandam S, Senn W. "Uncertainty-
+  modulated prediction errors in cortical microcircuits." /eLife/ 2025,
+  14:e95127.
+
+* Requirements for Agents                                          :noexport:
+
+#+begin_src yaml
+verification:
+  tests: tests/test_frog.py
+  test_count: 22
+  key_assertions:
+    - T fires transiently at bug onset
+    - S tracks localized stimulus (steady state > 0)
+    - Moving bug produces traveling wave of T activity
+    - Spot produces lower steady-state T than uniform illumination
+  quantitative:
+    - T peak within 50ms of onset
+    - T late value < T peak (transient decay)
+    - T peak at rightward pixel later than leftward pixel (traveling wave)
+#+end_src
