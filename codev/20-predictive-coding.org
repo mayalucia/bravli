@@ -1,0 +1,639 @@
+#+title: Lesson 20 — Uncertainty-Modulated Prediction Errors
+#+subtitle: Reproducing Wilmes & Senn (2025) and bridging to anatomical reconstruction
+#+author: bravli Collaboration
+#+property: header-args:python :mkdirp yes
+#+startup: showall
+
+* What This Lesson Teaches
+
+The brain does not passively receive sensory input — it actively predicts it.
+When prediction and sensation disagree, the resulting /prediction error/ drives
+learning. But how large should the update be? A whisker deflection that deviates
+from prediction by 5 mV means different things depending on context: in a quiet
+room it is news; during active whisking it may be noise.
+
+Wilmes, Petrovici, Sachidhanandam & Senn (eLife 2025) propose that the cortical
+layer 2/3 microcircuit solves this problem by computing /uncertainty-modulated
+prediction errors/:
+
+\begin{equation}
+\text{UPE} = \frac{s - \mu}{\sigma^2}
+\end{equation}
+
+where $s$ is the sensory input, $\mu$ is the predicted mean, and $\sigma^2$ is
+the predicted variance. This is exactly the gradient of the Gaussian
+log-likelihood with respect to the mean — the optimal Bayesian update signal.
+
+The circuit achieves this through a division of labour between two inhibitory
+interneuron types:
+
+- *SST+ (Martinotti) cells* provide /subtractive/ inhibition: they learn $\mu$
+  and subtract it from the sensory signal ($s - \mu$).
+- *PV+ (basket) cells* provide /divisive/ inhibition: they learn $\sigma^2$
+  and divide the error signal by it ($(s-\mu)/\sigma^2$).
+
+This lesson has three goals:
+
+1. Reproduce the Wilmes & Senn rate model from the equations, building our own
+   implementation rather than copying their code.
+2. Verify their key claims: SST learns the mean, PV learns the variance, and
+   the quadratic PV activation is necessary.
+3. Discuss what this means for building an anatomically realistic cortical
+   microcircuit à la BBP — bridging abstract computation to concrete biology.
+
+** Learning Objectives
+
+- [ ] Derive UPE as the gradient of Gaussian log-likelihood
+- [ ] Understand why PV must have a quadratic transfer function
+- [ ] Implement a rate-based dynamics engine (complementing our spiking LIF)
+- [ ] Build the 5-population UPE circuit and verify convergence
+- [ ] Reproduce context-switching experiments
+- [ ] Map rate-model populations to BBP m-types and understand STP implications
+
+** File Map
+
+| File                                   | Role                                |
+|----------------------------------------+-------------------------------------|
+| =bravli/simulation/rate_engine.py=     | Rate-based dynamics engine          |
+| =bravli/simulation/rate_plasticity.py= | UPE learning rules                  |
+| =bravli/applications/cortex/upe.py=    | Circuit builder + experiments       |
+| =tests/test_rate_engine.py=            | Engine unit tests (17 tests)        |
+| =tests/test_upe.py=                    | UPE circuit tests (14 tests)        |
+
+** Heritage
+
+This lesson stands at the intersection of three traditions:
+
+- *Predictive coding* (Rao & Ballard 1999, Friston 2005): the brain minimizes
+  prediction errors across a hierarchy of cortical areas.
+- *Canonical microcircuit models* (Bastos et al. 2012): specific cortical layers
+  carry predictions (L5/6, feedback) vs. prediction errors (L2/3, feedforward).
+- *Blue Brain Project reconstruction* (Markram et al. 2015): biophysically
+  detailed digital twins of cortical tissue, built from experimentally measured
+  cell types, morphologies, and connectivity rules.
+
+Wilmes & Senn bridge the first two — showing /how/ the canonical microcircuit
+computes prediction errors. Our goal is to extend the bridge to the third — 
+grounding the computation in BBP's measured anatomy.
+
+
+* The Science: Why Prediction Errors Need Uncertainty
+
+** The Bayesian Argument
+
+Consider a neuron that maintains an internal model of its sensory world: the
+stimulus $s$ is drawn from a Gaussian with unknown mean $\mu$ and known (for
+now) variance $\sigma^2$:
+
+\begin{equation}
+s \sim \mathcal{N}(\mu, \sigma^2)
+\end{equation}
+
+The optimal update to the estimate $\hat{\mu}$ after observing $s$ is
+stochastic gradient ascent on the log-likelihood:
+
+\begin{equation}
+\Delta\hat{\mu} \propto \frac{\partial}{\partial \hat{\mu}} \log p(s \mid \hat{\mu}, \sigma^2)
+= \frac{s - \hat{\mu}}{\sigma^2}
+\end{equation}
+
+This is the /uncertainty-modulated prediction error/ (UPE). Two features make
+it different from a raw prediction error $s - \hat\mu$:
+
+1. *Precision weighting*: The update is inversely proportional to variance.
+   Large errors in noisy contexts produce small updates. The system is
+   appropriately cautious.
+
+2. *Optimal learning rate*: This is not an ad hoc choice — it is the
+   mathematically optimal update for a Gaussian generative model. The learning
+   rate $1/\sigma^2$ (the precision) is itself a learned quantity.
+
+For a physicist, this should feel familiar. The UPE is structurally identical
+to the innovation term in a Kalman filter, weighted by the Kalman gain:
+
+\begin{equation}
+\text{Kalman update:} \quad \hat{x}_{t|t} = \hat{x}_{t|t-1} + K_t (z_t - H \hat{x}_{t|t-1})
+\end{equation}
+
+where $K_t \propto 1/\sigma^2_\text{innovation}$. The Wilmes & Senn circuit
+/is/ a biological Kalman filter.
+
+** Splitting into Positive and Negative Errors
+
+Neural firing rates are non-negative. A signed prediction error $s - \mu$ must
+be represented by two populations — one for positive errors (stimulus exceeds
+prediction) and one for negative errors (prediction exceeds stimulus):
+
+\begin{align}
+\text{UPE}^+ &= \frac{1}{\sigma^2} [s - \mu]_+ \\
+\text{UPE}^- &= \frac{1}{\sigma^2} [\mu - s]_+
+\end{align}
+
+where $[\cdot]_+ = \max(0, \cdot)$ is rectification. The full UPE is recovered
+as UPE$^+$ $-$ UPE$^-$.
+
+
+** The Circuit Decomposition
+
+Wilmes & Senn propose five populations in the L2/3 microcircuit:
+
+#+begin_example
+         sensory input (s)
+              │
+              ▼
+         ┌────────┐    subtractive    ┌───────┐
+         │  E+/E- │◄─────────────────│  SST+ │ learns μ
+         │  (PC)  │                   └───┬───┘
+         └───┬────┘                       │
+    divisive │                            │
+             ▼                            │
+         ┌────────┐                       │
+         │  PV+   │ learns σ²             │
+         └────────┘                       │
+              │                           │
+              ▼                           ▼
+         ┌────────┐     prediction    ┌───────┐
+         │   R    │◄──────────────────│  SST  │
+         │ (L5?)  │──────────────────►│  PV   │
+         └────────┘     self-prediction
+#+end_example
+
+The circuit computes UPE in three steps:
+
+1. *Subtraction*: SST fires at rate $\approx \mu$, providing subtractive
+   inhibition to E+/E-. The E neurons see $s - \mu$.
+2. *Division*: PV fires at rate $\approx \sigma^2$, providing divisive
+   normalization to E+/E-. The E neurons output $(s - \mu)/\sigma^2$.
+3. *Integration*: R accumulates the signed prediction error (E+ $-$ E-) to
+   update the internal representation, which feeds back to SST and PV.
+
+** The Equations
+
+*** Activation functions
+
+Two transfer functions are used:
+
+#+begin_src python :tangle -
+phi(x) = max(0, min(x, 20))        # rectified linear, clipped
+phi_pv(x) = max(0, min(x², 20))    # QUADRATIC, clipped
+#+end_src
+
+The quadratic $\phi_\text{PV}$ is the key insight. Because the PV activation
+is quadratic, the PV firing rate is proportional to the /square/ of its input.
+When that input fluctuates around zero (because SST has subtracted the mean),
+the average PV rate equals the /variance/ of the input. This is how a neural
+population computes a second moment using a simple nonlinearity.
+
+Replacing $\phi_\text{PV}$ with a linear function breaks variance learning.
+We verify this experimentally below.
+
+*** Prediction error neurons (E+, E-)
+
+The positive prediction error neuron has dynamics:
+
+\begin{equation}
+\tau_E \frac{dr_{E^+}}{dt} = -r_{E^+} + \phi\!\left(\frac{[w_{E,s} \cdot s - w_{E,\text{SST}} \cdot r_\text{SST}]_+^k}{I_0 + w_{E,\text{PV}} \cdot r_\text{PV}}\right)
+\end{equation}
+
+- The /numerator/ is the subtractive error: sensory input minus SST prediction,
+  raised to power $k$ (dendritic nonlinearity).
+- The /denominator/ is divisive normalization by PV: higher PV firing reduces
+  the gain, implementing the $1/\sigma^2$ scaling.
+- $I_0 > 0$ prevents division by zero.
+
+E- is analogous but with negated sensory input.
+
+*** SST dynamics (mean learning)
+
+\begin{equation}
+\tau_I \frac{dr_\text{SST}}{dt} = -r_\text{SST} + \phi\!\left((1-\beta) \, w_{\text{SST},a} \cdot r_a + \beta \cdot s\right)
+\end{equation}
+
+The SST neuron receives two inputs:
+- $(1-\beta) \, w \cdot r_a$: self-prediction from the representation neuron R
+- $\beta \cdot s$: direct /nudging/ from the stimulus (teaching signal)
+
+The parameter $\beta$ controls how much the interneuron is "told" the correct
+answer vs. how much it must predict from R alone. At $\beta = 0$, SST only sees
+R; at $\beta = 1$, SST only sees the stimulus. The Wilmes & Senn model uses
+$\beta = 0.1$ — mostly self-prediction, with a small teaching signal.
+
+*** PV dynamics (variance learning)
+
+\begin{equation}
+\tau_I \frac{dr_\text{PV}}{dt} = -r_\text{PV} + \phi_\text{PV}\!\left((1-\beta) \, w_{\text{PV},a} \cdot r_a + \beta \, (w_{\text{PV},s} \cdot s - w_{\text{PV,SST}} \cdot r_\text{SST})\right)
+\end{equation}
+
+PV receives the /residual/ $s - r_\text{SST}$ inside the $\beta$-scaled
+teaching signal. Because $\phi_\text{PV}$ is quadratic, the PV rate is
+proportional to $(s - \mu)^2$ on average — which is the variance $\sigma^2$.
+
+*** Representation neuron R
+
+\begin{equation}
+\tau_E \frac{dr_R}{dt} = -r_R + \phi\!\left(w_{R,a} \cdot r_a + w_{R,+} \cdot r_{E^+} - w_{R,-} \cdot r_{E^-}\right)
+\end{equation}
+
+R integrates the signed prediction error to update the internal representation.
+
+*** Plasticity rules
+
+SST and PV learn via anti-Hebbian prediction-error rules:
+
+\begin{align}
+\Delta w_{\text{SST},a} &= \eta \left(r_\text{SST} - \phi(w_{\text{SST},a} \cdot r_a)\right) \cdot r_a \\
+\Delta w_{\text{PV},a} &= \eta \left(r_\text{PV} - \phi_\text{PV}(w_{\text{PV},a} \cdot r_a)\right) \cdot r_a
+\end{align}
+
+Each interneuron adjusts its weight from R to minimize the discrepancy between
+its actual firing rate (driven partly by the teaching stimulus) and what it
+would predict from R alone. At convergence:
+
+- $w_\text{SST} \to \mu$ (because $\phi$ is linear in the active regime)
+- $w_\text{PV}^2 \to \sigma^2$ (because $\phi_\text{PV}$ is quadratic)
+
+** What the Rate Model Abstracts Away
+
+The Wilmes & Senn model is a /rate model/: each population is a single scalar
+representing average firing rate. It does not include:
+
+- *Spike timing and correlations*: Individual spikes carry information beyond
+  rates. Spike synchrony between E neurons could amplify error signals.
+- *Dendritic compartments*: The model represents $I_\text{dend}$ as a single
+  number. In reality, SST inhibition targets apical dendrites while PV targets
+  somata — the spatial separation is what enables subtractive vs. divisive.
+- *Short-term synaptic dynamics*: The BBP recipe shows that PC→MC synapses are
+  strongly /facilitating/ (USE=0.09, F=670 ms). This facilitation IS a form
+  of temporal mean estimation. The rate model's plasticity rule captures the
+  steady-state effect but misses the temporal dynamics.
+- *Population heterogeneity*: "SST neurons" are not one population — they
+  include Martinotti cells with different morphologies, laminar positions, and
+  projection targets.
+- *Axonal delays*: Signals take time to propagate. In a real barrel column,
+  the L4→L2/3 latency (~2 ms) and L2/3→L5 latency shape the temporal sequence
+  of prediction error computation.
+
+These are not minor details — they are what turns an algorithm into a circuit.
+The Discussion section below addresses each in the context of BBP anatomy.
+
+
+* Implementation Part I: Rate-Based Engine
+
+** Design Rationale
+
+Our existing engine (=simulation/engine.py=) simulates /spiking/ LIF neurons.
+The UPE model operates at the /rate/ level — continuous variables, no spikes.
+Rather than force one paradigm into the other, we build a clean rate engine
+that follows the same patterns (dataclass + simulate function + Euler loop)
+but operates on populations rather than individual neurons.
+
+The key structural difference: /divisive normalization/. In the spiking engine,
+all synaptic interactions are additive (weighted sum of incoming spikes). In the
+rate engine, PV acts on E+/E- through division — fundamentally different from
+an additive weight. The =RateCircuit= dataclass handles this with a =divisive=
+dict that specifies which populations receive divisive input from which sources.
+
+** RateCircuit and Transfer Functions
+
+The rate engine is implemented in =bravli/simulation/rate_engine.py=. The
+core data structures:
+
+#+begin_src python :tangle -
+@dataclass
+class RateCircuit:
+    n_populations: int
+    labels: list[str]              # ["E+", "E-", "SST+", "PV+", "R"]
+    tau: np.ndarray                # time constants, shape (n_pop,)
+    transfer_fn: list[Callable]    # activation per population
+    W: np.ndarray                  # additive weight matrix (n_pop, n_pop)
+    bias: np.ndarray               # constant input per population
+    divisive: dict                 # {target: (source, w_div, I_0)}
+#+end_src
+
+The transfer functions:
+
+#+begin_src python :tangle -
+def phi(x):
+    """Rectified linear: max(0, min(x, 20))"""
+    return np.clip(x, 0.0, 20.0)
+
+def phi_pv(x):
+    """Quadratic: max(0, min(x², 20))"""
+    return np.clip(np.where(x > 0, x ** 2, 0.0), 0.0, 20.0)
+#+end_src
+
+** The Simulation Loop
+
+The core loop is a straightforward Euler integration. For each population $i$
+at each timestep:
+
+1. Compute additive input: $I_i = \sum_j W_{ij} r_j + s_i + b_i$
+2. If divisive normalization applies: $I_i \leftarrow I_i / (I_0 + w_\text{div} \cdot r_k)$
+3. Euler step: $r_i \leftarrow r_i + (dt/\tau_i)(-r_i + \phi_i(I_i))$
+
+** Tests
+
+The rate engine has 17 unit tests covering:
+- Transfer function rectification and clipping
+- Single population decay to steady state
+- Two-population E-I balance (analytical steady state: $r_E = 10/3$)
+- Divisive normalization
+- Stimulus injection
+- Euler stability (small dt matches large dt)
+- Plasticity hook integration
+
+
+* Implementation Part II: The UPE Circuit
+
+** Building the Circuit
+
+The 5-population circuit is constructed in =bravli/applications/cortex/upe.py=:
+
+#+begin_src python :tangle -
+# Population indices
+E_PLUS, E_MINUS, SST, PV, R = 0, 1, 2, 3, 4
+
+def build_upe_circuit(params=None) -> RateCircuit:
+    """5-population UPE circuit with Wilmes & Senn defaults."""
+#+end_src
+
+** Parameter Table
+
+| Parameter     | Value   | Role                                      | Source        |
+|---------------+---------+-------------------------------------------+---------------|
+| $\tau_E$      | 10 ms   | Excitatory membrane time constant         | Wilmes & Senn |
+| $\tau_I$      | 2 ms    | Inhibitory membrane time constant         | Wilmes & Senn |
+| $\beta$       | 0.1     | Nudging / teaching signal fraction        | Wilmes & Senn |
+| $w_{E,s}$     | 1.0     | Stimulus → E+/E-                          | normalized    |
+| $w_{E,\text{SST}}$ | 1.0 | SST → E+/E- (subtractive)               | normalized    |
+| $w_{E,\text{PV}}$  | 6.0 | PV → E+/E- (divisive normalization)      | Wilmes & Senn |
+| $I_0$         | 1.0     | Divisive offset (prevents ÷ 0)           | Wilmes & Senn |
+| $\eta_\text{SST}$ | 0.001 | SST learning rate                       | Wilmes & Senn |
+| $\eta_\text{PV}$  | 0.001 | PV learning rate                        | Wilmes & Senn |
+| $w_\text{SST,R}^{(0)}$ | 0.1 | Initial SST←R weight              | arbitrary     |
+| $w_\text{PV,R}^{(0)}$  | 0.01 | Initial PV←R weight              | arbitrary     |
+
+** Plasticity Rules
+
+Implemented in =bravli/simulation/rate_plasticity.py=. The =UPEPlasticity=
+class follows the same callable pattern as =ThreeFactorSTDP= from Lesson 14:
+
+#+begin_src python :tangle -
+@dataclass
+class UPEPlasticity:
+    def __call__(self, step, t, dt, rates, circuit):
+        # SST: Δw = η (r_SST - φ(w · r_R)) · r_R
+        # PV:  Δw = η (r_PV - φ_PV(w · r_R)) · r_R
+#+end_src
+
+** Stimulus Protocol
+
+Stimuli are drawn from Gaussian blocks. Each trial presents a single sample
+held constant for =trial_duration= ms. Blocks of different (μ, σ) test
+adaptation to changing statistics.
+
+** Tests
+
+The UPE circuit has 14 tests covering construction, stimulus generation,
+basic dynamics, weight evolution, and the quadratic necessity test.
+
+
+* Results: Reproducing Wilmes & Senn
+
+The following experiments reproduce key claims from the paper. Each experiment
+runs the UPE circuit with plasticity enabled and verifies convergence.
+
+** Experiment 1: Learning the Mean
+
+Present 500 samples from $\mathcal{N}(5, 1)$. The SST weight should converge
+to $\mu = 5$.
+
+#+begin_src python :tangle -
+from bravli.applications.cortex.upe import run_upe_experiment, analyze_upe
+
+exp = run_upe_experiment(
+    [(5.0, 1.0, 500)],
+    params={"eta_sst": 0.005, "eta_pv": 0.005},
+    trial_duration=10.0,
+)
+analysis = analyze_upe(exp)
+print(f"True mean: {analysis['true_mean']:.2f}")
+print(f"Learned mean (SST weight): {analysis['learned_mean']:.2f}")
+print(f"Relative error: {analysis['mean_relative_error']:.1%}")
+#+end_src
+
+Typical result: SST weight converges to within 10–20% of the true mean after
+500 trials. The rate of convergence depends on $\eta_\text{SST}$ and $\beta$.
+
+** Experiment 2: Learning the Variance
+
+Present 500 samples from $\mathcal{N}(5, 2)$ (σ² = 4.0). The PV weight squared
+should converge toward σ².
+
+#+begin_src python :tangle -
+exp = run_upe_experiment(
+    [(5.0, 2.0, 500)],
+    params={"eta_sst": 0.005, "eta_pv": 0.005},
+    trial_duration=10.0,
+)
+analysis = analyze_upe(exp)
+print(f"True variance: {analysis['true_variance']:.2f}")
+print(f"Learned variance (w_PV²): {analysis['learned_variance']:.2f}")
+#+end_src
+
+** Experiment 3: Context Switching
+
+The most compelling test: switch between two stimulus distributions and verify
+that both SST and PV re-adapt.
+
+#+begin_src python :tangle -
+exp = run_upe_experiment(
+    [(3.0, 0.5, 200),   # low mean, low variance
+     (7.0, 2.0, 200),   # high mean, high variance
+     (3.0, 0.5, 200)],  # return to original
+    params={"eta_sst": 0.005, "eta_pv": 0.005},
+    trial_duration=10.0,
+)
+
+# Plot SST and PV weight trajectories
+sst_traj = exp["plasticity"].weight_trajectory("w_sst")
+pv_traj = exp["plasticity"].weight_trajectory("w_pv")
+# SST should track: 3 → 7 → 3
+# PV² should track: 0.25 → 4 → 0.25
+#+end_src
+
+At each distribution switch, there is a transient burst of large UPE as the
+circuit's predictions are suddenly wrong. The weights then re-adapt to the new
+statistics. This is the Bayesian circuit adjusting its model of the world.
+
+** Experiment 4: Why $\phi_\text{PV}$ Must Be Quadratic
+
+Replace PV's quadratic activation with linear $\phi$ and repeat Experiment 2.
+Variance learning should fail.
+
+#+begin_src python :tangle -
+# Build circuit with linear PV
+circuit = build_upe_circuit()
+circuit.transfer_fn[PV] = phi  # linear instead of quadratic
+
+# Run experiment... PV weight does NOT converge to √σ²
+#+end_src
+
+This is verified by =test_upe.py::TestQuadraticNecessity=. The quadratic
+nonlinearity is not an arbitrary modelling choice — it is the mechanism by
+which a neural population can compute a second moment. Without it, the circuit
+computes $(s - \mu)$ but cannot scale it by $1/\sigma^2$.
+
+
+* Discussion: From Rates to Anatomy
+
+** The Computational Skeleton
+
+The rate model reveals the /algorithm/: subtract the mean (SST), divide by the
+variance (PV), integrate the error (R). This algorithm is independent of
+biophysical details — any circuit that implements these three operations
+computes an optimal Bayesian update.
+
+This is both the model's strength and its limitation. It tells us /what/ the
+circuit computes, but not /how/ specific cell types, synapses, and morphologies
+implement it. The BBP reconstruction provides the "how."
+
+** Mapping to BBP M-Types
+
+| Rate population | BBP m-types       | Synaptic class | Key STP property             |
+|-----------------+-------------------+----------------+------------------------------|
+| E+ (UPE⁺)      | L2_TPC:A, L3_TPC:A | cADpyr        | Depressing (USE=0.46)        |
+| E- (UPE⁻)      | L2_TPC:B, L3_TPC:C | cADpyr        | Depressing (USE=0.46)        |
+| SST+            | L23_MC            | cACint         | PC→MC: *FACILITATING* (USE=0.09, F=670ms) |
+| PV+             | L23_LBC, L23_NBC  | fast-spiking   | Perisomatic, USE=0.14        |
+| R               | L5_TPC:A/B        | cADpyr         | Large C_m, less depressing   |
+| Sensory input   | L4_SSC → L2/3     | —              | *Strongly depressing* (USE=0.79) |
+| Top-down        | L1 → apical L2/3  | —              | Facilitating                 |
+
+** The Facilitating PC→MC Synapse IS Mean-Tracking
+
+The BBP recipe shows that PC→MC (pyramidal → Martinotti) synapses have
+USE = 0.09 and F = 670 ms — /strongly facilitating/. This means: the more
+a pyramidal cell fires, the stronger its drive onto the Martinotti cell
+becomes. Over time, the Martinotti cell's firing rate reflects the recent
+/average/ of pyramidal firing — which is the sensory mean $\mu$.
+
+Wilmes & Senn's SST plasticity rule $\Delta w \propto (r - \phi(w \cdot r_a)) \cdot r_a$
+captures the /steady-state/ of this process. But the facilitating synapse
+provides the /temporal/ dynamics: it is an exponentially weighted moving average
+with time constant $\tau_\text{fac} = 670$ ms. The rate model's plasticity
+rule is the long-term version of what the STP dynamics do on a moment-to-moment
+basis.
+
+This is not a coincidence. /Facilitation is biological mean estimation./
+
+** What Anatomy Adds
+
+*** Dendritic compartments enable subtractive vs. divisive
+
+In the rate model, subtraction and division are mathematically distinct
+operations on a single scalar. In a real neuron, they are implemented by
+different spatial locations on the dendritic tree:
+
+- SST (Martinotti) cells target /apical dendrites/ (distal from soma).
+  Inhibition here subtracts from excitatory input before it reaches the soma.
+- PV (basket) cells target the /perisomatic/ region (soma and proximal
+  dendrites). Inhibition here controls the /gain/ of the soma's
+  input-output function — implementing division.
+
+This spatial separation is what allows the same neuron to simultaneously
+experience subtraction and division. A point neuron model cannot capture this;
+a compartmental model can.
+
+*** Short-term dynamics as temporal filters
+
+The BBP recipe provides Tsodyks-Markram parameters for every pathway. These
+are not incidental parameters — they are /temporal filters/:
+
+- *L4→L2/3 (USE=0.79)*: Strongly depressing. Acts as an onset detector.
+  Transmits /news/ (unexpected changes) better than /confirmation/.
+- *PC→MC (USE=0.09, F=670ms)*: Strongly facilitating. Accumulates sustained
+  input. Implements temporal mean estimation.
+- *MC→PC (USE=0.30, D=1250ms)*: Depressing. Delivers a strong initial
+  prediction that fades — allowing the error signal to emerge.
+- *L5 TPC-TPC (USE=0.38, D=366ms)*: Least depressing excitatory pathway.
+  Supports sustained predictive representations.
+
+These dynamics implement the /temporal/ structure of predictive coding that
+the rate model compresses into a single steady-state equation.
+
+*** Population heterogeneity
+
+The rate model has one SST population. The BBP recipe has multiple MC subtypes
+within L2/3 alone, with different e-type distributions. Some may track the mean
+of one input dimension while others track another. This within-type diversity
+is invisible to the rate model but could be critical for multi-dimensional
+prediction.
+
+** For the Physicist: Fluctuation-Dissipation
+
+The UPE has a direct correspondence to the fluctuation-dissipation theorem.
+The SST pathway estimates the first moment $\langle s \rangle = \mu$ (the
+"equilibrium"). The PV pathway estimates the second moment
+$\langle (s - \mu)^2 \rangle = \sigma^2$ (the "fluctuations"). The ratio
+$(s - \mu)/\sigma^2$ is the precision-weighted innovation — structurally
+identical to the response function in linear response theory.
+
+In the language of stochastic filtering: UPE = Kalman gain × innovation.
+The cortex is implementing an approximate Kalman filter, with SST tracking
+the state estimate and PV tracking the error covariance.
+
+** Next Steps
+
+This lesson reproduced the rate model. The natural next step (a future
+Lesson 21) would build a /spiking/ L2/3 microcircuit using:
+
+- =Circuit= and =simulate= from =simulation/engine.py= (the LIF engine)
+- =CORTICAL_CELL_MODEL_DB= from =applications/cortex/cell_params.py=
+- =BBPRecipe= from =applications/cortex/recipe.py=
+
+and test whether the spiking circuit's emergent population dynamics match the
+rate model's predictions. The depressing L4→L2/3 synapse should act as an
+onset detector. The facilitating PC→MC synapse should track the stimulus mean.
+And the fast PV time constant should enable rapid gain adjustment.
+
+The "Lazy Neuroscientist" manuscript (=manuscripts/cortical-predictive-coding.org=)
+outlines this program in detail, including the boundary-condition approach
+for handling the rest of the brain outside the reconstructed microcircuit.
+
+
+* References
+
+- Wilmes KA, Petrovici MA, Sachidhanandam S, Senn W (2025). Uncertainty-modulated
+  prediction errors in cortical microcircuits. /eLife/ 14:e95127.
+- Wilmes KA, Granier A, Petrovici MA, Senn W (2024). Confidence and second-order
+  errors in cortical circuits. /PNAS Nexus/ 3(9):pgae404.
+- Bastos AM, Usrey WM, Adams RA, Mangun GR, Fries P, Friston KJ (2012).
+  Canonical microcircuits for predictive coding. /Neuron/ 76(4):695-711.
+- Rao RP, Ballard DH (1999). Predictive coding in the visual cortex.
+  /Nature Neuroscience/ 2(1):79-87.
+- Markram H et al. (2015). Reconstruction and simulation of neocortical
+  microcircuitry. /Cell/ 163(2):456-492.
+- Silberberg G, Markram H (2007). Disynaptic inhibition between neocortical
+  pyramidal cells mediated by Martinotti cells. /Neuron/ 53(5):735-746.
+
+
+* Requirements for Agents                                        :noexport:
+
+#+begin_src yaml :tangle no
+lesson: 20-predictive-coding
+tag: lesson/20-predictive-coding
+files_created:
+  - bravli/simulation/rate_engine.py
+  - bravli/simulation/rate_plasticity.py
+  - bravli/applications/cortex/upe.py
+  - tests/test_rate_engine.py
+  - tests/test_upe.py
+verification:
+  - "pytest tests/test_rate_engine.py -v -- 17 tests pass"
+  - "pytest tests/test_upe.py -v -- 14 tests pass"
+  - "SST weight converges toward stimulus mean"
+  - "PV weight converges toward stimulus variance"
+  - "Linear PV activation breaks variance learning"
+next_lesson: 21-upe-to-anatomy
+#+end_src
