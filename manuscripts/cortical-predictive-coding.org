@@ -1,0 +1,1159 @@
+#+TITLE: The Lazy Neuroscientist's Cortical Column
+#+SUBTITLE: Boundary-Condition Approaches to Predictive Coding in Reconstructed Microcircuits
+#+AUTHOR: Vishal Sood
+#+DATE: 2026-02-23
+#+OPTIONS: toc:3 num:t
+
+#+begin_abstract
+The Blue Brain Project demonstrated that biologically detailed digital twins of
+cortical tissue can be reconstructed from sparse experimental data using
+constraint propagation. However, the enterprise scale of that effort --- millions
+of neurons, billions of synapses, supercomputer-class simulation --- has left
+the approach inaccessible to individual scientists. We propose an alternative:
+reconstruct only the minimal circuit demanded by a specific scientific question,
+and treat everything outside that domain as a boundary condition. We ground this
+approach in the predictive coding framework, where cortical layers play
+distinct computational roles (prediction, error, update), and apply it to the
+well-characterized barrel cortex of the rodent. Drawing on BBP's curated
+circuit-building recipes, Allen Institute cell-type data, recent
+uncertainty-modulated predictive coding theory (Wilmes & Senn), and the Mathis
+lab's adaptive intelligence framework (CEBRA, neuro-musculoskeletal modeling),
+we outline a methodology for building question-driven cortical microcircuits
+that are biophysically grounded yet computationally tractable for a single
+scientist's workstation. We propose that the latent dynamics of the
+reconstructed circuit --- analyzed with tools like CEBRA --- should match
+those observed in vivo, providing a principled bridge between anatomical
+reconstruction and functional understanding.
+#+end_abstract
+
+
+* Introduction: The Accessibility Problem
+
+The Blue Brain Project's reconstruction of rat somatosensory cortex
+cite:Markram2015 demonstrated something remarkable: that a small number of
+biological measurements, combined with the right models of interdependency, can
+generate dense, self-consistent digital tissue. The 2015 model reconstructed
+~31,000 neurons with ~37 million synapses from 55 morphological and 207
+morpho-electrical neuron subtypes. The 2024 successor cite:Reimann2024anatomy
+scaled this to 4.2 million neurons across eight cortical subregions with 13.2
+billion synapses.
+
+These are extraordinary scientific achievements. They are also, by design,
+enterprise-scale engineering projects. The pipeline requires:
+- Volumetric brain atlases (NRRD format, voxelized)
+- Curated morphology databases (thousands of reconstructed neurons)
+- High-performance touch-detection algorithms
+- Supercomputer-class simulation (BluePyOpt, NEURON, CoreNEURON)
+- Dedicated teams for each pipeline stage
+
+No individual scientist can reproduce this. And indeed, despite the BBP making
+its tools open-source, essentially no external group has independently
+reconstructed a cortical volume using the full pipeline. The MICrONS project
+cite:microns2021 took the complementary approach --- dense electron microscopy
+reconstruction --- requiring even more resources.
+
+This is a missed opportunity. The /science/ embedded in the BBP methodology ---
+the recipes, the parameter curation, the biological rules --- is enormously
+valuable and largely organism-independent. What's needed is a way to extract
+that scientific value without requiring the engineering infrastructure.
+
+
+* The Boundary-Condition Principle
+
+** Lessons from Physics and Engineering
+
+Every physicist learns early that you don't simulate the universe to study a
+vibrating string. You define your /domain of interest/ (the string), specify
+/boundary conditions/ at the endpoints (fixed, free, periodic), and solve the
+resulting equations. The boundary conditions encode everything about the external
+world that matters for the string's behavior --- and nothing else.
+
+This principle scales to arbitrary complexity. Computational fluid dynamics
+simulates airflow over a wing, not the entire atmosphere. Finite element
+analysis models stress in a bridge joint, not the whole bridge. In each case,
+the art lies in choosing:
+1. The right domain boundary (what to include explicitly)
+2. The right boundary conditions (how to represent the excluded region)
+3. Validation criteria (how to know the truncation doesn't corrupt the answer)
+
+** The Missing Synapse Problem as a Boundary Condition
+
+In the BBP's cortical reconstructions, a persistent challenge was the /missing
+synapse problem/. A typical cortical neuron receives ~10,000 synapses, but
+only a fraction originate from within any finite reconstructed volume. In the
+2015 column model (~31,000 neurons), roughly 80% of excitatory synapses onto a
+given neuron came from outside the reconstructed volume.
+
+The BBP's solution was compensation: inject stochastic conductance into each
+neuron to replace the missing synaptic drive, calibrated so that neurons achieve
+/in vivo/-like firing rates and membrane potential statistics
+cite:Isbister2024. This compensation was itself a major research effort,
+requiring careful tuning of noise amplitude, correlation structure, and
+layer-specific parameters.
+
+But notice: this compensation /is/ a boundary condition. It represents the
+statistical effect of the rest of the brain on each neuron inside the domain.
+The BBP arrived at it empirically, after building the full internal circuit. We
+propose to design for it from the start.
+
+** The Lazy Principle
+
+We call our approach /lazy/ not as self-deprecation but as a design principle,
+in the sense of lazy evaluation in functional programming: compute only what is
+demanded by the current query, defer everything else.
+
+The lazy neuroscientist:
+1. Starts from a /scientific question/, not a brain region
+2. Identifies the /minimal circuit/ that the question demands
+3. Reconstructs that circuit using the best available data and models
+4. Encodes everything else as /structured boundary conditions/
+5. Validates against experimental observations
+6. Iteratively expands the domain only when the boundary conditions prove
+   insufficient
+
+This is not a simplification --- it is a change in what counts as the primary
+object. The BBP approach treats the reconstruction as primary and derives
+function from it. The lazy approach treats the question as primary and derives
+the reconstruction from it.
+
+
+* Predictive Coding as a Computational Framework
+
+** From Rao-Ballard to Canonical Microcircuits
+
+Predictive coding proposes that the cortex maintains a hierarchical generative
+model of its sensory inputs cite:Rao1999. Higher-level representations generate
+predictions of lower-level activity; the difference --- the prediction error ---
+propagates upward to update the model. This framework, formalized by Friston
+and colleagues in the free-energy principle, maps naturally onto cortical
+anatomy cite:Bastos2012:
+
+| Cortical element    | Predictive coding role    | Signal direction |
+|---------------------+---------------------------+------------------|
+| L2/3 pyramidal      | Prediction error          | Feedforward      |
+| L5/6 pyramidal      | Predictions (top-down)    | Feedback         |
+| L4 stellate         | Sensory input relay       | Feedforward      |
+| Inhibitory (SST)    | Subtractive predictions   | Local            |
+| Inhibitory (PV)     | Gain modulation           | Local            |
+
+Bastos et al. cite:Bastos2012 showed a remarkable correspondence between this
+computational scheme and the known connectivity of the canonical cortical
+column: superficial layers project feedforward, deep layers project feedback,
+and inhibitory interneurons mediate local computations.
+
+** Uncertainty-Modulated Prediction Errors
+
+A critical advance was made by Wilmes, Petrovici, Sachidhanandam, and Senn
+cite:Wilmes2025, who showed that prediction errors should not be computed as
+simple differences (observation minus prediction) but should be /modulated by
+uncertainty/. In a stochastic environment, a large prediction error in a
+highly variable context should produce less model updating than the same error
+in a stable context.
+
+They proposed that the L2/3 microcircuit implements this through two inhibitory
+pathways:
+- *SST interneurons* provide /subtractive inhibition/, encoding the predicted
+  mean of the stimulus distribution
+- *PV interneurons* provide /divisive inhibition/, encoding the uncertainty
+  (inverse precision) of the prediction
+
+The resulting uncertainty-modulated prediction error (UPE) takes the form:
+
+\begin{equation}
+\text{UPE} = \frac{x - \mu}{\sigma^2}
+\end{equation}
+
+where $x$ is the sensory input, $\mu$ is the prediction (encoded by SST
+inhibition), and $\sigma^2$ is the uncertainty (encoded by PV gain modulation).
+
+This is precisely the derivative of the Gaussian log-likelihood with respect to
+the mean --- the signal needed for optimal Bayesian updating. The circuit
+computes it using biologically realistic operations (subtraction and division by
+inhibitory interneurons).
+
+Wilmes and Senn further extended this framework to second-order errors ---
+signals needed to update the uncertainty estimate itself cite:Wilmes2024soe,
+showing that the same circuit architecture can learn both the mean and variance
+of stimulus distributions through local plasticity rules.
+
+** Why This Matters for Reconstruction
+
+Predictive coding provides what pure reconstruction lacks: a /reason/ for the
+circuit to exist. The BBP reconstruction is anatomically complete but
+computationally agnostic --- it tells you what's there but not what it's for.
+The predictive coding framework says: L2/3 computes prediction errors, L5
+generates predictions, L4 relays sensory input, SST encodes means, PV encodes
+precision. This functional assignment constrains which parts of the circuit
+matter for which questions, and therefore guides the lazy reconstruction
+strategy.
+
+
+* Barrel Cortex as the Testing Ground
+
+** Why Barrel Cortex
+
+The rodent barrel cortex (wS1) is the best-characterized cortical region for
+our purposes:
+
+1. *Discrete functional units*: Each barrel corresponds to a single whisker,
+   providing a natural definition of "one circuit" cite:Petersen2019.
+2. *Well-mapped laminar flow*: The canonical L4 → L2/3 → L5 pathway is
+   thoroughly characterized electrophysiologically.
+3. *Rich experimental literature*: Petersen's lab at EPFL has decades of
+   /in vivo/ recordings with cell-type resolution.
+4. *BBP recipe data*: The CircuitBuildRecipe provides curated parameters for
+   rat somatosensory cortex --- 60 morphological types, pathway-specific
+   synapse parameters with full Tsodyks-Markram dynamics.
+5. *Natural predictive coding substrate*: Whisking is an active sensing
+   process --- the animal generates predictions about what its whiskers will
+   encounter, and barrel cortex computes the prediction errors.
+
+** The L4 → L2/3 → L5 Pathway
+
+The flow of information through a barrel column follows a well-established
+pattern:
+
+1. *Thalamic input (VPM) → L4*: Thalamocortical axons terminate primarily on
+   L4 spiny stellate cells (SSC) and L4 pyramidal cells. This is the sensory
+   drive --- the "observation" in predictive coding terms.
+
+2. *L4 → L2/3*: L4 SSCs project strongly to L2/3 pyramidal cells
+   (connection probability ~0.1, cite:Feldmeyer2002). In the predictive coding
+   frame, this delivers the sensory signal to the error-computing layer.
+
+3. *L2/3 local processing*: L2/3 pyramidal cells interact with SST and PV
+   interneurons. SST (Martinotti) cells provide dendritic inhibition; PV
+   (basket) cells provide perisomatic inhibition. This is where prediction
+   errors are computed.
+
+4. *L2/3 → L5*: L2/3 pyramids project to L5 thick-tufted pyramidal cells
+   (TPC:A, TPC:B), which generate the output of the column --- to other
+   cortical areas, thalamus, and subcortical targets.
+
+5. *Top-down input → L1/L5*: Feedback from higher areas targets L1 (where
+   apical tufts of L2/3 and L5 pyramids arborize) and directly onto L5
+   pyramids. This carries the prediction signal.
+
+** Cell Types from the BBP Recipe
+
+The BBP's =cell_composition.yaml= provides the full census for rat SSCx.
+For a barrel column focused on the L4 → L2/3 → L5 pathway, the relevant
+m-types are:
+
+#+begin_src python :eval no
+# Relevant m-types for the L4 -> L2/3 -> L5 predictive coding circuit
+# Extracted from BBP CircuitBuildRecipe/inputs/1_cell_placement/cell_composition.yaml
+
+CIRCUIT_MTYPES = {
+    # Layer 4 - sensory relay
+    "L4_SSC":  {"sclass": "EXC", "role": "sensory_relay",
+                "etype_dist": {"cADpyr": 1.0}},
+    "L4_TPC":  {"sclass": "EXC", "role": "sensory_relay",
+                "etype_dist": {"cADpyr": 1.0}},
+    "L4_LBC":  {"sclass": "INH", "role": "PV_basket",
+                "etype_dist": {"cACint": 0.18, "cNAC": 0.11, "cSTUT": 0.25,
+                               "dNAC": 0.39, "dSTUT": 0.07}},
+    "L4_MC":   {"sclass": "INH", "role": "SST_martinotti",
+                "etype_dist": {"bAC": 0.09, "bNAC": 0.03, "cACint": 0.71,
+                               "cNAC": 0.15, "dNAC": 0.03}},
+    "L4_NBC":  {"sclass": "INH", "role": "PV_basket",
+                "etype_dist": {"cACint": 0.10, "cIR": 0.05, "cNAC": 0.48,
+                               "dNAC": 0.38}},
+
+    # Layer 2/3 - prediction error computation
+    "L2_TPC:A": {"sclass": "EXC", "role": "prediction_error",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L2_TPC:B": {"sclass": "EXC", "role": "prediction_error",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L3_TPC:A": {"sclass": "EXC", "role": "prediction_error",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L3_TPC:C": {"sclass": "EXC", "role": "prediction_error",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L23_MC":   {"sclass": "INH", "role": "SST_prediction",
+                 "etype_dist": {"bAC": 0.02, "bNAC": 0.02, "cACint": 0.83,
+                                "cNAC": 0.10, "dNAC": 0.02}},
+    "L23_LBC":  {"sclass": "INH", "role": "PV_precision",
+                 "etype_dist": {"bAC": 0.07, "bNAC": 0.06, "cACint": 0.24,
+                                "cNAC": 0.16, "cSTUT": 0.04, "dNAC": 0.42}},
+    "L23_NBC":  {"sclass": "INH", "role": "PV_precision",
+                 "etype_dist": {"bAC": 0.05, "bNAC": 0.02, "cACint": 0.25,
+                                "cIR": 0.02, "cNAC": 0.31, "dNAC": 0.37}},
+
+    # Layer 5 - prediction generation / output
+    "L5_TPC:A": {"sclass": "EXC", "role": "prediction_output",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L5_TPC:B": {"sclass": "EXC", "role": "prediction_output",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L5_TPC:C": {"sclass": "EXC", "role": "prediction_output",
+                 "etype_dist": {"cADpyr": 1.0}},
+    "L5_MC":    {"sclass": "INH", "role": "SST_martinotti",
+                 "etype_dist": {"bAC": 0.37, "bIR": 0.11, "bSTUT": 0.04,
+                                "cACint": 0.37, "cNAC": 0.04, "cSTUT": 0.04,
+                                "dNAC": 0.04}},
+    "L5_LBC":   {"sclass": "INH", "role": "PV_basket",
+                 "etype_dist": {"bAC": 0.06, "cACint": 0.12, "cIR": 0.06,
+                                "cNAC": 0.18, "cSTUT": 0.18, "dNAC": 0.18,
+                                "dSTUT": 0.24}},
+}
+#+end_src
+
+** Synapse Physiology from the BBP Recipe
+
+The =builderRecipeAllPathways.xml= provides Tsodyks-Markram parameters for
+every pathway. These encode short-term dynamics --- depression, facilitation ---
+that are critical for the temporal filtering that predictive coding requires.
+
+#+begin_src python :eval no
+# Synapse classes from BBP recipe, relevant to the PC circuit
+# Parameters: gsyn (nS), u (USE), d (ms), f (ms), dtc (ms), nrrp, nmda_ratio
+
+SYNAPSE_CLASSES = {
+    # Excitatory pathways
+    "E2":               {"gsyn": 0.68, "u": 0.50, "d": 671, "f": 17,
+                         "dtc": 1.74, "nrrp": 1.5, "nmda": 0.70,
+                         "note": "General E-E (depressing)"},
+    "E2_L4PC":          {"gsyn": 0.51, "u": 0.86, "d": 671, "f": 17,
+                         "dtc": 1.74, "nrrp": 1.0, "nmda": 0.86,
+                         "note": "L4 PC-PC: strongly depressing (Silver 2003)"},
+    "E2_L4SS_L23PC":    {"gsyn": 0.24, "u": 0.79, "d": 671, "f": 17,
+                         "dtc": 1.74, "nrrp": 1.8, "nmda": 0.50,
+                         "note": "L4 SSC -> L2/3 PC: the canonical FF pathway (Feldmeyer 2002)"},
+    "E2_L23PC":         {"gsyn": 0.75, "u": 0.46, "d": 671, "f": 17,
+                         "dtc": 1.74, "nrrp": 2.6, "nmda": 0.70,
+                         "note": "L2/3 PC-PC: moderate depression (Koester 2005)"},
+    "E2_L23PC_L5TTPC":  {"gsyn": 0.42, "u": 0.50, "d": 671, "f": 17,
+                         "dtc": 1.74, "nrrp": 1.5, "nmda": 0.70,
+                         "note": "L2/3 PC -> L5 TTPC: prediction error to predictor"},
+    "E2_L5TTPC":        {"gsyn": 1.94, "u": 0.38, "d": 366, "f": 26,
+                         "dtc": 1.74, "nrrp": 2.8, "nmda": 0.71,
+                         "note": "L5 TPC-TPC: less depressing (Barros-Zulaica 2019)"},
+
+    # Inhibitory pathways
+    "I2_MC":            {"gsyn": 3.0, "u": 0.30, "d": 1250, "f": 2,
+                         "dtc": 8.3, "nrrp": 1.0,
+                         "note": "MC -> PC: SST dendritic inhibition (Silberberg 2007)"},
+    "I2_NBC":           {"gsyn": 1.95, "u": 0.14, "d": 875, "f": 22,
+                         "dtc": 8.3, "nrrp": 3.3,
+                         "note": "NBC -> PC: PV perisomatic inhibition (Wang 2002)"},
+    "E1_MC":            {"gsyn": 0.17, "u": 0.09, "d": 138, "f": 670,
+                         "dtc": 1.74, "nrrp": 1.5,
+                         "note": "PC -> MC: FACILITATING (Silberberg 2007)"},
+}
+#+end_src
+
+Several features are computationally significant:
+
+1. *L4 → L2/3 synapses are strongly depressing* (USE = 0.79). This means they
+   act as onset detectors --- a whisker deflection produces a strong initial
+   response that quickly adapts. In predictive coding terms, they transmit
+   /news/ (unexpected input) more effectively than /confirmation/.
+
+2. *PC → MC (SST) synapses are facilitating* (USE = 0.09, F = 670 ms). The
+   more a pyramidal cell fires, the stronger its drive onto Martinotti cells
+   becomes. This is exactly the dynamics needed for SST cells to learn the
+   /prediction/ (running average of input) --- sustained activity builds up
+   the inhibitory representation of expected input.
+
+3. *MC → PC (SST) synapses are strongly depressing* (USE = 0.30, D = 1250 ms)
+   with high conductance (3.0 nS). This provides a strong but transient
+   subtractive signal --- the prediction is delivered forcefully at onset but
+   then decreases, allowing the error signal to emerge.
+
+4. *L5 TPC-TPC synapses* are the least depressing excitatory pathway (USE =
+   0.38, D = 366 ms, F = 26 ms), consistent with L5's role in maintaining
+   sustained predictive representations.
+
+These short-term dynamics are not incidental parameters --- they are the
+/temporal filters/ through which the circuit implements predictive coding.
+
+
+* Boundary Conditions for a Barrel Column
+
+** What's Inside, What's Outside
+
+For a single barrel column focused on the L4 → L2/3 → L5 predictive coding
+pathway, the domain boundary separates:
+
+*Inside* (explicitly reconstructed):
+- L4 excitatory neurons (SSC, TPC, UPC)
+- L4 inhibitory neurons (LBC, NBC, MC, BTC, CHC, DBC, SBC, NGC, BP)
+- L2/3 excitatory neurons (TPC:A, TPC:B, IPC)
+- L2/3 inhibitory neurons (LBC, NBC, MC, BTC, CHC, DBC, SBC, NGC, BP)
+- L5 thick-tufted pyramidal cells (TPC:A, TPC:B, TPC:C, UPC)
+- L5 inhibitory neurons (LBC, NBC, MC, BTC, CHC, DBC, SBC, NGC, BP)
+- All synaptic connections among the above
+
+*Outside* (represented as boundary conditions):
+- Thalamocortical input (VPM → L4): structured Poisson input with
+  whisker-stimulus-locked temporal profile
+- Neighboring barrel columns: lateral inhibition, surround modulation
+- Higher cortical areas → L1/L5: top-down prediction signals
+- L6 and thalamocortical feedback: corticothalamic loop
+- Neuromodulatory tone: background state (awake/anesthetized)
+- All other brain regions: encoded in spontaneous firing statistics
+
+** Types of Boundary Conditions
+
+Drawing from physics and engineering, we can classify boundary conditions:
+
+*** Dirichlet-like (prescribed activity)
+Specify the firing rate or membrane potential statistics of external
+populations. Example: thalamic input as an inhomogeneous Poisson process with
+rate $\lambda(t)$ shaped by the stimulus waveform.
+
+*** Neumann-like (prescribed flux)
+Specify the synaptic current density arriving from outside. This is essentially
+what the BBP's missing synapse compensation does: inject a conductance
+$g_\text{ext}(t)$ calibrated to produce the right total synaptic drive.
+
+*** Robin-like (mixed / impedance)
+Specify a relationship between the activity of boundary neurons and their input.
+Example: neighboring columns respond to our column's output with a gain factor
+(lateral interaction kernel), feeding back a signal proportional to but delayed
+from the local output. This captures recurrent interactions with the surround
+without explicitly modeling the surround.
+
+*** Absorbing vs. Reflecting
+- /Absorbing/: spikes that leave the domain are lost (open boundary). Used when
+  the external target doesn't feed back significantly.
+- /Reflecting/: output from the domain returns as input after transformation.
+  Used for recurrent loops (e.g., corticothalamic).
+
+** Calibration from Experiment
+
+The boundary conditions are not free parameters --- they are constrained by
+experimental measurements:
+
+- *Spontaneous rates*: In vivo recordings from Petersen's lab provide
+  layer-specific spontaneous firing rates during quiet wakefulness and active
+  whisking cite:Petersen2019.
+- *Evoked responses*: Whisker-evoked PSP amplitudes and latencies in each
+  layer constrain the thalamic drive and inter-layer gain.
+- *Correlation structure*: Pairwise correlations between neurons in the same
+  and different layers constrain the shared input statistics.
+- *Membrane potential distributions*: Whole-cell recordings provide the full
+  $V_m$ distribution, which must be reproduced by the combination of internal
+  connectivity and boundary input.
+
+
+* Computational Tools: What We Need to Build
+
+The lazy approach requires a toolkit that is distinct from the BBP's
+enterprise pipeline. We sketch the key components here as code that will evolve
+into bravli's =reconstruction= module.
+
+** Recipe Parser
+
+The BBP recipe files encode decades of curated experimental knowledge. We need
+to parse them into Python data structures.
+
+#+begin_src python :eval no
+"""Parse BBP CircuitBuildRecipe into Python data structures.
+
+The recipe files are:
+  - cell_composition.yaml: m-type densities, layer assignments, e-type distributions
+  - mtype_taxonomy.tsv: morphological class (PYR/INT) and synaptic class (EXC/INH)
+  - builderRecipeAllPathways.xml: synapse parameters per pathway
+  - mini_frequencies.tsv: spontaneous miniature frequencies per layer
+"""
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Tuple
+import yaml
+import xml.etree.ElementTree as ET
+
+
+@dataclass
+class MType:
+    """A morphological neuron type from the BBP taxonomy."""
+    name: str
+    layer: int
+    morph_class: str     # PYR or INT
+    synapse_class: str   # EXC or INH
+    etype_distribution: Dict[str, float] = field(default_factory=dict)
+
+    @property
+    def is_excitatory(self) -> bool:
+        return self.synapse_class == "EXC"
+
+
+@dataclass
+class SynapseClass:
+    """Tsodyks-Markram synapse parameters from the BBP recipe."""
+    id: str
+    gsyn: float       # peak conductance (nS)
+    gsyn_sd: float    # standard deviation of gsyn
+    u: float          # initial release probability (USE)
+    u_sd: float
+    d: float          # depression time constant (ms)
+    d_sd: float
+    f: float          # facilitation time constant (ms)
+    f_sd: float
+    dtc: float        # decay time constant (ms)
+    dtc_sd: float
+    nrrp: float       # number of readily releasable vesicles
+    nmda_ratio: float = 0.0  # NMDA/AMPA ratio (gsynSRSF)
+    u_hill: float = 2.79     # Hill coefficient for calcium dependence
+
+
+@dataclass
+class PathwayRule:
+    """Maps pre -> post m-type pattern to a synapse class."""
+    from_pattern: str   # e.g., "L4_SSC", "L*_MC", fromSClass="EXC"
+    to_pattern: str
+    synapse_class_id: str
+
+
+def parse_cell_composition(path: Path) -> List[MType]:
+    """Parse cell_composition.yaml into a list of MType objects."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+
+    mtypes = []
+    for entry in data.get("neurons", []):
+        traits = entry.get("traits", {})
+        mtype = MType(
+            name=traits["mtype"],
+            layer=traits["layer"],
+            morph_class="",    # filled from taxonomy
+            synapse_class="",  # filled from taxonomy
+            etype_distribution=traits.get("etype", {}),
+        )
+        mtypes.append(mtype)
+    return mtypes
+
+
+def parse_taxonomy(path: Path) -> Dict[str, Tuple[str, str]]:
+    """Parse mtype_taxonomy.tsv -> {mtype: (morph_class, synapse_class)}."""
+    taxonomy = {}
+    with open(path) as f:
+        next(f)  # skip header
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) == 3:
+                taxonomy[parts[0]] = (parts[1], parts[2])
+    return taxonomy
+
+
+def parse_synapse_classes(path: Path) -> Dict[str, SynapseClass]:
+    """Parse the <SynapsesClassification> from the recipe XML."""
+    tree = ET.parse(path)
+    root = tree.getroot()
+    classes = {}
+    for cls in root.iter("class"):
+        sc = SynapseClass(
+            id=cls.get("id"),
+            gsyn=float(cls.get("gsyn")),
+            gsyn_sd=float(cls.get("gsynSD")),
+            u=float(cls.get("u")),
+            u_sd=float(cls.get("uSD")),
+            d=float(cls.get("d")),
+            d_sd=float(cls.get("dSD")),
+            f=float(cls.get("f")),
+            f_sd=float(cls.get("fSD")),
+            dtc=float(cls.get("dtc")),
+            dtc_sd=float(cls.get("dtcSD")),
+            nrrp=float(cls.get("nrrp")),
+            nmda_ratio=float(cls.get("gsynSRSF", 0.0)),
+            u_hill=float(cls.get("uHillCoefficient", 2.79)),
+        )
+        classes[sc.id] = sc
+    return classes
+#+end_src
+
+** Cell Placement in a Column
+
+Given cell-type densities, we need to place neurons in a cylindrical volume
+representing one barrel column. The column geometry is well-characterized:
+~300 μm diameter, ~1500 μm height (L1-L6), with known layer thicknesses.
+
+#+begin_src python :eval no
+"""Place neurons in a barrel column geometry.
+
+A barrel column is modeled as a cylinder with layer-specific boundaries.
+Neurons are distributed according to measured densities within each layer.
+"""
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Dict
+
+
+@dataclass
+class LayerGeometry:
+    """Geometry of one cortical layer within the column."""
+    layer_id: int
+    top_depth: float     # μm from pia (0 = pia surface)
+    bottom_depth: float  # μm from pia
+    neuron_density: float # neurons / mm³ (from atlas or literature)
+
+    @property
+    def thickness(self) -> float:
+        return self.bottom_depth - self.top_depth
+
+    @property
+    def volume_mm3(self) -> float:
+        """Volume of this layer within the column cylinder."""
+        # Will be set based on column radius
+        return 0.0
+
+
+# Rat barrel cortex layer thicknesses (μm, from Markram 2015)
+RAT_BARREL_LAYERS = [
+    LayerGeometry(1, 0,    128,  neuron_density=2800),
+    LayerGeometry(2, 128,  318,  neuron_density=92000),
+    LayerGeometry(3, 318,  580,  neuron_density=70000),
+    LayerGeometry(4, 580,  890,  neuron_density=100000),
+    LayerGeometry(5, 890,  1250, neuron_density=55000),
+    LayerGeometry(6, 1250, 1500, neuron_density=65000),
+]
+
+
+@dataclass
+class PlacedNeuron:
+    """A neuron placed in the column with 3D position."""
+    neuron_id: int
+    mtype: str
+    etype: str
+    position: np.ndarray   # (x, y, z) in μm, z = depth from pia
+    layer: int
+
+
+def place_neurons_in_column(
+    mtypes: List[Dict],
+    layers: List[LayerGeometry],
+    column_radius: float = 150.0,  # μm
+    seed: int = 0,
+) -> List[PlacedNeuron]:
+    """Place neurons in a cylindrical barrel column.
+
+    For each layer, sample the number of neurons from the density,
+    distribute them by m-type according to their relative densities,
+    and assign random positions within the cylinder.
+    """
+    rng = np.random.default_rng(seed)
+    neurons = []
+    neuron_id = 0
+
+    for layer_geom in layers:
+        # Volume of the cylinder slice for this layer
+        volume_um3 = np.pi * column_radius**2 * layer_geom.thickness
+        volume_mm3 = volume_um3 * 1e-9  # convert μm³ to mm³
+
+        n_total = int(round(layer_geom.neuron_density * volume_mm3))
+
+        # Get m-types assigned to this layer, sample proportionally
+        layer_mtypes = [m for m in mtypes if m["layer"] == layer_geom.layer_id]
+
+        if not layer_mtypes:
+            continue
+
+        # Distribute n_total across m-types (proportional to density fractions)
+        # For now, uniform distribution across m-types in the layer
+        for m in layer_mtypes:
+            n_this_type = max(1, n_total // len(layer_mtypes))
+
+            for _ in range(n_this_type):
+                # Random position in cylinder
+                r = column_radius * np.sqrt(rng.uniform())
+                theta = rng.uniform(0, 2 * np.pi)
+                x = r * np.cos(theta)
+                y = r * np.sin(theta)
+                z = rng.uniform(layer_geom.top_depth, layer_geom.bottom_depth)
+
+                # Sample e-type from distribution
+                etype_dist = m.get("etype_distribution", {})
+                if etype_dist:
+                    etypes = list(etype_dist.keys())
+                    probs = list(etype_dist.values())
+                    etype = rng.choice(etypes, p=probs)
+                else:
+                    etype = "unknown"
+
+                neurons.append(PlacedNeuron(
+                    neuron_id=neuron_id,
+                    mtype=m["name"],
+                    etype=etype,
+                    position=np.array([x, y, z]),
+                    layer=layer_geom.layer_id,
+                ))
+                neuron_id += 1
+
+    return neurons
+#+end_src
+
+** Connectivity from Morphological Overlap Statistics
+
+The BBP pipeline generates connectivity through touch detection between
+detailed morphologies. We replace this with a statistical model that preserves
+the essential feature: connection probability depends on the spatial overlap of
+pre-axonal and post-dendritic arbors in each layer.
+
+#+begin_src python :eval no
+"""Statistical connectivity model for point-neuron networks.
+
+Replace BBP's morphology-based touch detection with a distance-dependent
+connection probability model. The key insight: connection probability between
+two neurons depends on:
+  1. Their m-types (which determines axonal/dendritic reach across layers)
+  2. Their spatial separation (distance-dependent falloff)
+  3. The pathway-specific mean synapse count (from BBP recipe or literature)
+"""
+import numpy as np
+from typing import Dict, Tuple, List
+
+
+# Connection probabilities per pathway from BBP data and literature
+# Format: (pre_mtype_pattern, post_mtype_pattern) -> (p_connect, mean_n_syn, distance_scale_um)
+# p_connect: connection probability at zero distance
+# mean_n_syn: mean number of synapses per connection
+# distance_scale_um: exponential falloff scale
+
+PATHWAY_PARAMS = {
+    # L4 -> L2/3 (canonical feedforward)
+    ("L4_SSC", "L23_PC"):     (0.10, 4.5, 200.0),  # Feldmeyer et al. 2002
+    ("L4_SSC", "L23_MC"):     (0.05, 3.0, 150.0),  # estimated
+
+    # L2/3 recurrent
+    ("L23_PC", "L23_PC"):     (0.10, 5.5, 300.0),  # Feldmeyer et al. 2006
+    ("L23_PC", "L23_MC"):     (0.10, 3.0, 150.0),  # Silberberg & Markram 2007
+    ("L23_PC", "L23_LBC"):    (0.20, 4.0, 200.0),  # high convergence
+    ("L23_MC", "L23_PC"):     (0.30, 8.0, 300.0),  # broad dendritic targeting
+    ("L23_LBC", "L23_PC"):    (0.30, 6.0, 200.0),  # dense perisomatic
+
+    # L2/3 -> L5 (error to predictor)
+    ("L23_PC", "L5_TPC"):     (0.05, 3.0, 250.0),  # Reyes & Sakmann 1999
+
+    # L5 recurrent
+    ("L5_TPC", "L5_TPC"):     (0.10, 5.0, 300.0),  # Markram et al. 1997
+    ("L5_TPC", "L5_MC"):      (0.08, 3.0, 200.0),
+    ("L5_MC", "L5_TPC"):      (0.25, 8.0, 300.0),
+    ("L5_LBC", "L5_TPC"):     (0.25, 6.0, 200.0),
+}
+
+
+def connect_neurons(
+    neurons: List,
+    pathway_params: Dict[Tuple[str, str], Tuple[float, float, float]],
+    synapse_classes: Dict,
+    seed: int = 0,
+) -> List[Dict]:
+    """Generate connections between placed neurons using distance-dependent model.
+
+    For each pair of neurons whose m-types match a pathway rule:
+      1. Compute inter-soma distance
+      2. Compute distance-dependent connection probability
+      3. If connected, sample number of synapses
+      4. Assign synapse class from pathway rules
+    """
+    rng = np.random.default_rng(seed)
+    connections = []
+
+    # Build spatial index for efficiency (simple for now)
+    for i, pre in enumerate(neurons):
+        for j, post in enumerate(neurons):
+            if i == j:
+                continue
+
+            # Find matching pathway
+            for (pre_pat, post_pat), (p0, mean_nsyn, scale) in pathway_params.items():
+                if _matches(pre.mtype, pre_pat) and _matches(post.mtype, post_pat):
+                    # Distance-dependent probability
+                    d = np.linalg.norm(pre.position - post.position)
+                    p = p0 * np.exp(-d / scale)
+
+                    if rng.uniform() < p:
+                        n_syn = max(1, rng.poisson(mean_nsyn))
+                        connections.append({
+                            "pre": i,
+                            "post": j,
+                            "n_synapses": n_syn,
+                            "pathway": f"{pre_pat}->{post_pat}",
+                        })
+                    break  # first matching rule wins
+
+    return connections
+
+
+def _matches(mtype: str, pattern: str) -> bool:
+    """Simple pattern matching for m-type names.
+    L23_PC matches L2_TPC:A, L2_TPC:B, L3_TPC:A, L3_TPC:C
+    """
+    # This needs proper implementation with the BBP wildcard rules
+    # For now, a placeholder
+    if pattern.endswith("_PC"):
+        layer_prefix = pattern.split("_")[0]
+        return mtype.startswith(layer_prefix) and "PC" in mtype or "SSC" in mtype
+    return mtype.startswith(pattern)
+#+end_src
+
+** Boundary Condition Generator
+
+#+begin_src python :eval no
+"""Generate structured boundary conditions for the truncated circuit.
+
+The boundary conditions replace all synaptic input from outside the
+reconstructed volume. They are calibrated to reproduce in vivo statistics.
+"""
+import numpy as np
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class BoundaryCondition:
+    """Boundary condition for one neuron."""
+    neuron_id: int
+
+    # Tonic component: constant background drive
+    g_exc_mean: float     # mean excitatory conductance (nS)
+    g_inh_mean: float     # mean inhibitory conductance (nS)
+
+    # Fluctuating component: Ornstein-Uhlenbeck process
+    g_exc_std: float      # std of excitatory fluctuations (nS)
+    g_inh_std: float      # std of inhibitory fluctuations (nS)
+    tau_exc: float = 2.7  # correlation time (ms), from Destexhe et al.
+    tau_inh: float = 10.5 # correlation time (ms)
+
+    # Structured component: stimulus-locked input
+    stimulus_kernel: Optional[np.ndarray] = None  # time-varying rate modulation
+    stimulus_weight: float = 0.0
+
+
+@dataclass
+class ThalamicInput:
+    """Thalamic (VPM) boundary condition for L4 neurons.
+
+    Models thalamocortical drive as an inhomogeneous Poisson process
+    whose rate is shaped by the whisker stimulus.
+    """
+    n_fibers: int = 300          # VPM fibers per barrel column
+    baseline_rate: float = 5.0   # Hz, spontaneous thalamic rate
+    peak_rate: float = 200.0     # Hz, peak evoked rate
+    onset_latency: float = 7.0   # ms, from whisker deflection to cortex
+    rise_time: float = 2.0       # ms
+    decay_time: float = 15.0     # ms
+    gsyn_per_fiber: float = 0.5  # nS, thalamocortical synapse conductance
+
+    def rate_profile(self, t: np.ndarray, stim_times: np.ndarray) -> np.ndarray:
+        """Compute time-varying firing rate of thalamic input.
+
+        Alpha-function profile locked to each stimulus onset.
+        """
+        rate = np.full_like(t, self.baseline_rate, dtype=float)
+        for t_stim in stim_times:
+            t_rel = t - (t_stim + self.onset_latency)
+            mask = t_rel > 0
+            alpha = (t_rel[mask] / self.rise_time) * np.exp(
+                -(t_rel[mask] - self.rise_time) / self.decay_time
+            )
+            rate[mask] += (self.peak_rate - self.baseline_rate) * alpha / alpha.max()
+        return rate
+
+
+@dataclass
+class TopDownInput:
+    """Top-down (feedback) boundary condition for L1 and L5.
+
+    Models predictions from higher cortical areas.
+    In the predictive coding frame, this carries the prediction signal.
+    """
+    n_fibers: int = 100
+    baseline_rate: float = 3.0   # Hz
+    prediction_rate: float = 30.0  # Hz, when prediction is active
+    target_layers: tuple = (1, 5)
+
+    # The prediction signal depends on the context.
+    # For a first model, we use a simple gated signal:
+    # high rate = strong prediction, low rate = no prediction (novel stimulus)
+#+end_src
+
+
+* Toward a Reconstructive Investigation
+
+** The First Question
+
+Our first investigation will ask: /Can a biophysically reconstructed L2/3 microcircuit, with realistic SST and PV populations and BBP-calibrated synapse dynamics, compute uncertainty-modulated prediction errors in the sense of Wilmes & Senn?/
+
+This is not a toy question. It connects:
+- BBP's curated biological parameters (the /what/)
+- Predictive coding theory (the /why/)
+- Barrel cortex experiments (the /validation/)
+
+** The Experimental Protocol (In Silico)
+
+Following Wilmes & Senn, the protocol is:
+
+1. Present repeated stimuli (whisker deflections) from a distribution with
+   known mean μ and variance σ².
+2. The L4 → L2/3 pathway delivers the sensory signal.
+3. Through plasticity, SST interneurons should learn to represent μ (the
+   prediction), and PV interneurons should represent 1/σ² (the precision).
+4. L2/3 pyramidal cell activity should then reflect the uncertainty-modulated
+   prediction error: (x - μ) / σ².
+5. When stimulus statistics change (context switch), the circuit should adapt
+   its predictions and uncertainty estimates.
+
+The boundary conditions play a critical role: thalamic input carries the
+sensory observation, top-down input carries the prior expectation. The
+/balance/ between these determines whether the circuit operates in a
+sensory-dominated or prediction-dominated regime --- which is precisely what
+predictive coding theory describes.
+
+** Validation Against Petersen's Data
+
+The reconstructed circuit must reproduce:
+- Layer-specific spontaneous firing rates during quiet wakefulness
+- Whisker-evoked EPSP amplitudes and latencies in L2/3 and L5
+- Cell-type-specific response profiles (SST vs PV vs pyramidal)
+- Adaptation to repeated stimuli (suppression of predicted inputs)
+- Mismatch responses (enhanced response to unexpected inputs)
+
+These are precisely the experimental signatures of predictive coding that
+have been observed in barrel cortex.
+
+
+* Adaptive Intelligence: The Mathis Lab Approach
+
+The Blue Brain Project represented one paradigm of computational neuroscience:
+reconstruct the anatomy with maximal fidelity, then discover function through
+simulation. The Mathis lab at EPFL represents a complementary paradigm: start
+from behavior, build computational models that explain neural dynamics, and let
+the data tell you what circuit properties matter.
+
+** From Observation to Internal Models
+
+Mackenzie Mathis has argued that the neocortical column should be understood as
+a /universal template for perception and world-model learning/
+cite:Mathis2023column. Drawing on Mountcastle's observation that cortical
+columns share a common anatomy across all neocortical areas, she proposes that
+each column learns a predictive model of its inputs --- whether those inputs are
+whisker deflections, visual features, or proprioceptive signals. The column is
+not a feature detector; it is a /world-model learner/.
+
+This perspective aligns with and strengthens the predictive coding framework we
+described earlier, but adds a crucial dimension: the internal model is not
+static. It is learned from experience, updated through error signals, and
+adapted when the environment changes. The Mathis lab's experimental program
+studies exactly this --- how mice learn sensorimotor skills, how their cortical
+representations change during learning, and how they adapt when conditions
+shift.
+
+** CEBRA: Reading the Neural Code
+
+A methodological breakthrough from the Mathis lab is CEBRA (Consistent
+EmBeddings of high-dimensional Recordings using Auxiliary variables)
+cite:Schneider2023cebra, published in /Nature/ in 2023. CEBRA uses contrastive
+self-supervised learning to discover low-dimensional latent embeddings of neural
+population activity, conditioned on behavioral variables.
+
+What makes CEBRA relevant to our project:
+
+1. *Joint behavioral-neural analysis*: Rather than analyzing spikes in
+   isolation, CEBRA finds the latent manifold that jointly explains neural
+   activity and behavior. For a predictive coding circuit, this means we can
+   ask: does the latent structure of L2/3 activity align with prediction
+   errors? Does L5 activity track predictions?
+
+2. *Cross-session and cross-subject consistency*: CEBRA can align latent
+   spaces across recording sessions and even across animals. This enables
+   the kind of systematic comparison that our lazy reconstruction approach
+   needs: do simulated and recorded latent dynamics occupy the same manifold?
+
+3. *Modality-agnostic*: CEBRA works with calcium imaging, electrophysiology,
+   and even simulated spike trains. We can apply it identically to our /in
+   silico/ circuit and to Petersen's /in vivo/ recordings.
+
+** Prediction Errors in Sensorimotor Cortex
+
+The DeWolf et al. (2024) preprint from the Mathis lab cite:DeWolf2024
+provides direct experimental evidence for the computational framework we're
+building on. Using a neuro-musculoskeletal model of the mouse forelimb (50
+muscles, physics simulation), they mapped neural activity in M1 and S1 onto
+control-theoretic features --- including prediction errors.
+
+Key findings:
+- L2/3 neurons in both M1 and S1 encode features from high-level position
+  down to muscle-level dynamics
+- *S1 neurons more prominently encode sensorimotor prediction errors* than M1
+- M1 and S1 jointly support /optimal state estimation/ (a Kalman-filter-like
+  computation)
+- Neural latent dynamics change differentially in S1 vs. M1 during
+  within-session motor adaptation
+
+This is striking confirmation that prediction errors are not an abstract
+theoretical construct but measurable signals in specific cortical layers. The
+DeWolf et al. approach of mapping neural activity onto control-theoretic
+features is exactly the kind of analysis we should perform on our reconstructed
+circuit.
+
+** Adaptive Intelligence: A Bridge Between Reconstruction and Function
+
+In a recent /Nature Neuroscience/ perspective, Mathis defines /adaptive
+intelligence/ as the capacity to learn online, generalize, and rapidly adapt to
+environmental changes cite:Mathis2025adaptive. She argues that biological
+intelligence achieves this through internal models that predict sensory
+consequences of actions and update when predictions fail --- precisely the
+predictive coding loop.
+
+This bridges the two EPFL traditions:
+- *BBP* gave us the /biological substrate/ --- the cell types, synapses, and
+  wiring rules from which cortical circuits are built
+- *Mathis lab* gives us the /computational framework/ --- how those circuits
+  implement adaptive internal models, and the tools (CEBRA, DeepLabCut,
+  neuro-musculoskeletal modeling) to validate circuit models against
+  behavioral and neural data
+
+Our lazy reconstruction approach sits at this intersection. We use BBP's
+curated biological parameters to build the circuit, predictive coding theory to
+assign computational roles, and Mathis-lab-style analysis to validate the
+circuit's latent dynamics against experiment. The boundary conditions are not
+just a trick to make simulation tractable --- they are the /interface/ between
+the local circuit's internal model and the world it is trying to predict.
+
+#+begin_src python :eval no
+"""Analysis pipeline connecting reconstruction to Mathis-lab methods.
+
+After simulating the reconstructed circuit, we analyze its dynamics using
+approaches inspired by CEBRA and the DeWolf et al. framework.
+"""
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+import numpy as np
+
+
+@dataclass
+class SimulationRecord:
+    """Output of a circuit simulation, ready for latent analysis."""
+    spike_trains: Dict[int, np.ndarray]  # neuron_id -> spike times (ms)
+    membrane_potentials: Dict[int, np.ndarray]  # neuron_id -> Vm trace
+    stimulus_times: np.ndarray           # whisker deflection times
+    stimulus_values: np.ndarray          # stimulus amplitudes
+    neuron_metadata: List[Dict]          # mtype, layer, role for each neuron
+    dt: float = 0.1                      # ms
+
+
+@dataclass
+class PredictiveCodingDecomposition:
+    """Decompose circuit activity into predictive coding components.
+
+    Following DeWolf et al. 2024, map neural activity onto computational
+    features: predictions, prediction errors, uncertainty estimates.
+    """
+    prediction_signal: np.ndarray      # L5 TPC activity (filtered)
+    error_signal: np.ndarray           # L2/3 PC activity
+    sensory_signal: np.ndarray         # L4 SSC activity
+    sst_inhibition: np.ndarray         # SST (MC) activity = learned mean
+    pv_inhibition: np.ndarray          # PV (LBC/NBC) activity = precision
+
+    @property
+    def uncertainty_modulated_error(self) -> np.ndarray:
+        """UPE = (sensory - prediction) / variance, per Wilmes & Senn."""
+        prediction = self.sst_inhibition  # SST encodes predicted mean
+        precision = self.pv_inhibition + 1e-6  # PV encodes inverse variance
+        return (self.sensory_signal - prediction) * precision
+
+
+def extract_pc_components(record: SimulationRecord) -> PredictiveCodingDecomposition:
+    """Extract predictive coding signals from simulation output.
+
+    Group neurons by their functional role (assigned from m-type)
+    and compute population-level signals.
+    """
+    role_spikes = {}
+    for neuron in record.neuron_metadata:
+        role = neuron["role"]
+        nid = neuron["neuron_id"]
+        if nid in record.spike_trains:
+            role_spikes.setdefault(role, []).append(record.spike_trains[nid])
+
+    def population_rate(spike_lists, sigma_ms=10.0):
+        """Gaussian-smoothed population firing rate."""
+        # Kernel density estimation over spike trains
+        t_max = max(s.max() for sl in spike_lists for s in sl if len(s) > 0)
+        t = np.arange(0, t_max, record.dt)
+        rate = np.zeros_like(t)
+        n_neurons = len(spike_lists)
+        for spikes in spike_lists:
+            for s in spikes:
+                rate += np.exp(-0.5 * ((t - s) / sigma_ms)**2)
+        return rate / (n_neurons * sigma_ms * np.sqrt(2 * np.pi))
+
+    return PredictiveCodingDecomposition(
+        prediction_signal=population_rate(role_spikes.get("prediction_output", [[]])),
+        error_signal=population_rate(role_spikes.get("prediction_error", [[]])),
+        sensory_signal=population_rate(role_spikes.get("sensory_relay", [[]])),
+        sst_inhibition=population_rate(role_spikes.get("SST_prediction", [[]])),
+        pv_inhibition=population_rate(role_spikes.get("PV_precision", [[]])),
+    )
+#+end_src
+
+
+* Discussion: What the Lazy Approach Gains and Loses
+
+** What We Gain
+
+1. *Accessibility*: A single scientist can build and simulate the circuit on
+   a laptop. No supercomputer, no dedicated engineering team.
+2. *Question-driven science*: The reconstruction serves the question, not
+   the other way around. Different questions produce different circuits.
+3. *Principled truncation*: Boundary conditions are explicit, calibrated,
+   and falsifiable. If they're wrong, the circuit behavior will disagree
+   with experiment --- and that disagreement tells you what's missing.
+4. *Iterative refinement*: When boundary conditions fail, you expand the
+   domain --- add L6 and the thalamocortical loop, add neighboring columns,
+   add specific long-range projections. Each expansion is motivated by a
+   specific failure.
+
+** What We Lose
+
+1. *Morphological detail*: We use statistical connectivity rather than
+   touch-detected connections. This means we cannot study questions that
+   depend on the precise subcellular location of synapses.
+2. *Completeness*: The BBP reconstruction guarantees that every neuron and
+   synapse within the volume is accounted for. Our reconstruction includes
+   only the types and pathways relevant to the question.
+3. *Emergence*: Some phenomena emerge only in large-scale, complete circuits
+   (e.g., slow oscillations, travelling waves). Our truncated circuit will
+   miss these unless they're encoded in the boundary conditions.
+
+** The Key Bet
+
+Our approach bets that the /functional/ properties of cortical circuits ---
+prediction error computation, uncertainty modulation, context-dependent
+processing --- are primarily determined by:
+- Cell-type composition and ratios
+- Pathway-specific synapse dynamics (USE, D, F)
+- The balance of excitation and inhibition
+- The boundary conditions (external input statistics)
+
+...and /not/ by the precise spatial arrangement of ~100,000 synapses within
+the volume. This is a testable hypothesis. If a statistically-wired circuit
+with BBP parameters fails to compute prediction errors while a
+touch-detected circuit succeeds, then morphological detail matters for
+function in ways we don't yet understand. That would itself be an important
+finding.
+
+
+* References
+:PROPERTIES:
+:UNNUMBERED: t
+:END:
+
+#+BIBLIOGRAPHY: cortical-pc.bib
+
+- cite:Rao1999 :: Rao RPN, Ballard DH. Predictive coding in the visual cortex: a functional interpretation of some extra-classical receptive-field effects. /Nature Neuroscience/ 2:79-87, 1999.
+- cite:Bastos2012 :: Bastos AM, Usrey WM, Adams RA, Mangun GR, Fries P, Friston KJ. Canonical microcircuits for predictive coding. /Neuron/ 76(4):695-711, 2012.
+- cite:Markram2015 :: Markram H et al. Reconstruction and simulation of neocortical microcircuitry. /Cell/ 163(2):456-492, 2015.
+- cite:Reimann2024anatomy :: Reimann MW et al. Modeling and simulation of neocortical micro- and mesocircuitry. Part I: Anatomy. /eLife/ 13:e99688, 2024.
+- cite:Isbister2024 :: Isbister JB et al. Modeling and simulation of neocortical micro- and mesocircuitry. Part II: Physiology and experimentation. /eLife/ 13:e99693, 2024.
+- cite:Wilmes2025 :: Wilmes KA, Petrovici MA, Sachidhanandam S, Senn W. Uncertainty-modulated prediction errors in cortical microcircuits. /eLife/ 14:e95127, 2025.
+- cite:Wilmes2024soe :: Wilmes KA, Granier A, Petrovici MA, Senn W. Confidence and second-order errors in cortical circuits. /PNAS Nexus/ 3(9):pgae404, 2024.
+- cite:Petersen2019 :: Petersen CCH. Sensorimotor processing in the rodent barrel cortex. /Nature Reviews Neuroscience/ 20:533-546, 2019.
+- cite:Feldmeyer2002 :: Feldmeyer D, Lübke J, Silver RA, Sakmann B. Synaptic connections between layer 4 spiny neurone-layer 2/3 pyramidal cell pairs in juvenile rat barrel cortex. /Journal of Physiology/ 540(1):169-188, 2002.
+- cite:Nejad2025 :: Nejad KK, Anastasiades PG, Hertäg L, Costa RP. Self-supervised predictive learning accounts for cortical layer-specificity. /Nature Communications/ 16, 2025.
+- cite:microns2021 :: MICrONS Consortium. Functional connectomics spanning multiple areas of mouse visual cortex. /bioRxiv/ 2021.
+- cite:Hertag2022 :: Hertäg L, Clopath C. Prediction-error neurons in circuits with multiple neuron types: Formation, refinement, and functional implications. /PNAS/ 119(13), 2022.
+- cite:Mathis2023column :: Mathis MW. The neocortical column as a universal template for perception and world-model learning. /Nature Reviews Neuroscience/ 24:3, 2023.
+- cite:Schneider2023cebra :: Schneider S, Lee JH, Mathis MW. Learnable latent embeddings for joint behavioural and neural analysis. /Nature/ 617:360-368, 2023.
+- cite:DeWolf2024 :: DeWolf T, Schneider S, Soubiran P, Roggenbach A, Mathis MW. Neuro-musculoskeletal modeling reveals muscle-level neural dynamics of adaptive learning in sensorimotor cortex. /bioRxiv/ 2024.09.11.612513, 2024.
+- cite:Mathis2025adaptive :: Mathis MW. Leveraging insights from neuroscience to build adaptive artificial intelligence. /Nature Neuroscience/ 2025.
