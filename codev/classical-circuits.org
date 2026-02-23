@@ -1,0 +1,749 @@
+#+title: Twelve Classical Circuits of Computational Neuroscience
+#+subtitle: A literature survey and roadmap for MāyāLucIA / bravli
+#+author: bravli Collaboration
+#+startup: showall
+
+* Overview
+
+Computational neuroscience has a canon: a handful of toy circuits, each
+small enough to understand completely, each powerful enough to illuminate
+a fundamental principle of neural computation. These circuits have been
+built, analysed, extended, and rebuilt for decades. They are the
+Drosophila of the field — simple systems that reveal universal truths.
+
+This document surveys twelve such circuits, roughly in chronological
+order. For each we give: the original papers, the circuit's structure
+and dynamics, the key insight, the landscape of computational
+explorations (textbooks, software, modern extensions), and how it
+connects to our project.
+
+The twelve span the field's core concerns:
+
+| Theme | Circuits |
+|-------+----------|
+| What is a neuron? | McCulloch-Pitts (1943), Hodgkin-Huxley (1952) |
+| What does a sensory circuit compute? | Lettvin's frog (1959), Hubel-Wiesel V1 (1962) |
+| What do populations do? | Wilson-Cowan (1972), Brunel balanced network (2000) |
+| How does memory work? | Hopfield network (1982) |
+| How does the brain learn? | Marr-Albus cerebellum (1969), Oja's rule (1982) |
+| How does the brain decide? | Winner-take-all (1973) |
+| How does the brain move? | Central pattern generator (1911), Braitenberg vehicles (1984) |
+
+Two of these — Lettvin's frog retina and Brunel's balanced network — are
+already implemented as bravli lessons (21 and 15 respectively). The
+others await.
+
+* 1. McCulloch-Pitts Logic Gates (1943)
+
+** The Paper
+
+McCulloch WS, Pitts W. "A logical calculus of the ideas immanent in
+nervous activity." /Bull Math Biophys/ 1943, 5:115-133.
+
+** The Circuit
+
+Binary threshold neurons: output = 1 if $\sum_j w_j x_j \geq \theta$,
+else 0. Excitatory connections have positive weights; inhibitory
+connections have absolute veto. Synchronous update.
+
+A single neuron with appropriate weights and threshold computes AND, OR,
+NOT. Networks of such neurons compute any propositional logic expression.
+Recurrent connections enable memory and temporal logic.
+
+*Parameters*: n+1 per neuron (n weights + 1 threshold).
+
+** The Insight
+
+Neurons are logical primitives. Any computable function can be realized
+by a finite network of binary threshold neurons. The brain could, in
+principle, be a universal Turing machine.
+
+** Computational Explorations
+
+- /Textbooks/: Dayan & Abbott (2001, Ch. 1), Gerstner et al. (2014),
+  Izhikevich (2007) — all treat as historical foundation
+- /Software/: NEST simulator includes =mcculloch_pitts_neuron= model
+- /Connection to AI/: Direct precursor to Rosenblatt's perceptron
+  (1958), multilayer perceptrons, and modern deep learning
+- /Reviews/: "Where Deep Learning and Generative AI Started:
+  Masterminds of Artificial Neural Networks" (/IT Professional/ 2024)
+
+** For bravli
+
+The natural starting point for a "build intelligence from scratch" arc.
+Implement AND/OR/NOT gates, then a binary adder, then a flip-flop
+(memory). Show that computation emerges from connectivity, not from the
+sophistication of individual units. Use our rate engine with a step
+transfer function.
+
+* 2. Hodgkin-Huxley Squid Axon (1952)
+
+** The Papers
+
+Five papers in /J. Physiol./ (1952), the canonical one being:
+
+Hodgkin AL, Huxley AF. "A quantitative description of membrane current
+and its application to conduction and excitation in nerve." /J Physiol/
+1952, 117(4):500-544.
+
+Nobel Prize in Physiology or Medicine, 1963.
+
+** The Circuit
+
+One neuron, four ODEs. Membrane voltage $V$ driven by sodium (fast
+activation $m$, slow inactivation $h$) and potassium (slow activation
+$n$) conductances:
+
+\begin{equation}
+C_m \frac{dV}{dt} = -\bar{g}_{Na} m^3 h (V - V_{Na}) - \bar{g}_K n^4 (V - V_K) - g_L (V - V_L) + I_{ext}
+\end{equation}
+
+with voltage-dependent rate equations for $m$, $h$, $n$.
+
+*Parameters*: ~25 total (3 conductances, 3 reversal potentials,
+capacitance, ~18 rate function parameters). Minimal: ~10-15.
+
+** The Insight
+
+The action potential is not an all-or-none electrical discharge — it
+emerges from the interplay of voltage-gated ion channel kinetics.
+Regenerative Na^{+} activation creates the upstroke; Na^{+} inactivation and
+K^{+} activation create the downstroke. Refractoriness, threshold, and
+propagation all follow from these kinetics.
+
+** Computational Explorations
+
+- /Simplifications/: FitzHugh-Nagumo (1961, 2D), Morris-Lecar (2D with
+  Ca/K), Izhikevich (2003, quadratic integrate-and-fire, ~5 FLOPs/ms)
+- /Textbooks/: Dayan & Abbott Ch. 5-6, Izhikevich (2007, extensive
+  bifurcation analysis), Ermentrout & Terman (2010), Gerstner et al.
+  (2014, Ch. 2.2, free online at neuronaldynamics.epfl.ch)
+- /Software/: NEURON (ModelDB 5426), Brian2 (=hodgkin_huxley_1952=
+  example), NEST (=hh_cond_exp_traub=), BioModels (BIOMD0000000020)
+- /Educational/: Neuronal Dynamics exercises (EPFL), countless GitHub
+  notebooks in Python/Julia/MATLAB
+
+** For bravli
+
+We already have LIF and AdEx engines. The HH model would be a natural
+extension — a biophysics lesson showing how LIF emerges as a
+simplification of HH, which emerges from channel kinetics. Implement HH
+→ FitzHugh-Nagumo → Izhikevich → LIF as a cascade of simplifications,
+each dropping detail but preserving the essential qualitative dynamics.
+
+* 3. Lettvin's Frog Retina (1959)
+
+** The Paper
+
+Lettvin JY, Maturana HR, McCulloch WS, Pitts WH. "What the frog's eye
+tells the frog's brain." /Proc IRE/ 1959, 47(11):1940-1951.
+
+** The Circuit
+
+Four classes of retinal ganglion cells, each with center-surround
+receptive fields tuned to different features:
+
+| Class | Name | Response |
+|-------+------+----------|
+| 1 | Sustained contrast | Edges, local contrast |
+| 2 | Convexity (bug detector) | Small dark moving objects |
+| 3 | Moving edge | Any edge in motion |
+| 4 | Dimming | Rapid darkening |
+
+*Parameters*: ~5-10 per fiber type (DoG spatial filter + temporal filter
++ nonlinearity).
+
+** The Insight
+
+The retina does not transmit pixels. It extracts features. The bug
+detector responds only to small, dark, moving objects — literally
+computing a prediction error (what deviates from the expected static
+background). Sensory systems are information processors, not cameras.
+
+** Computational Explorations
+
+- /Efficient coding/: Barlow HB (1961), "Possible principles underlying
+  the transformations of sensory messages," /Sensory Communication/, MIT
+  Press, 217-234
+- /Predictive coding in retina/: Srinivasan MV, Laughlin SB, Dubs A
+  (1982), "Predictive coding: a fresh view of inhibition in the retina,"
+  /Proc R Soc Lond B/ 216:427-459
+- /Modern retinal models/: Pillow JW et al. (2005), GLM/LNP models, /J
+  Neurosci/ 25:11003; Chichilnisky lab primate retina; neuromorphic
+  event cameras
+- /Software/: Our Lesson 21 (=applications/retina/frog.py=)
+
+** Status in bravli
+
+*Done* — Lesson 21 (=codev/21-what-the-frog-sees.org=): 3-population
+circuit (P, S, T) with DoG center-surround, demonstrating temporal
+prediction via slow $\tau_S$ and spatial prediction via center-surround.
+22 tests passing.
+
+* 4. Hubel-Wiesel V1 (1962)
+
+** The Papers
+
+Hubel DH, Wiesel TN. "Receptive fields of single neurones in the cat's
+striate cortex." /J Physiol/ 1959, 148:574-591.
+
+Hubel DH, Wiesel TN. "Receptive fields, binocular interaction and
+functional architecture in the cat's visual cortex." /J Physiol/ 1962,
+160(1):106-154.
+
+Nobel Prize in Physiology or Medicine, 1981.
+
+** The Circuit
+
+Two-layer hierarchy:
+
+1. *Simple cells*: Orientation-selective, phase-sensitive. Constructed
+   from aligned LGN center-surround inputs → Gabor-like receptive
+   fields. ~6-8 parameters per cell ($x, y, \theta, f, \phi, \sigma$).
+
+2. *Complex cells*: Orientation-selective, position-invariant. Pool over
+   simple cells with same orientation but different positions.
+
+** The Insight
+
+Hierarchical construction of selectivity. Orientation tuning emerges
+from aligned inputs. Position invariance emerges from spatial pooling.
+This is the blueprint for convolutional neural networks: convolution
+(simple cells) + pooling (complex cells) + depth.
+
+** Computational Explorations
+
+- /Gabor filters/: Simple cells $\approx$ Gaussian-windowed sinusoids;
+  scikit-image has tutorials
+- /Sparse coding/: Olshausen BA, Field DJ (1996), "Emergence of
+  simple-cell receptive field properties by learning a sparse code for
+  natural images," /Nature/ 381:607-609 — unsupervised learning on
+  natural images reproduces V1 receptive fields
+- /HMAX model/: Riesenhuber M, Poggio T (1999), "Hierarchical models of
+  object recognition in cortex," /Nat Neurosci/ 2:1019-1025; extended by
+  Serre et al. (2007), /PNAS/ 104:6424-6429
+- /Textbooks/: Dayan & Abbott (orientation tuning), Gerstner et al.
+  (hierarchical models), Palmer's /Vision Science/
+
+** For bravli
+
+The natural next lesson after the frog retina: extend the 1D retinal
+strip to oriented filters (Gabor bank), then pool for position
+invariance. Show that Olshausen-Field sparse coding discovers these
+filters from natural images. Connects our retinal circuit (Lesson 21) to
+cortical computation (Lesson 20's UPE lives in L2/3, one level above V1
+simple cells).
+
+* 5. Wilson-Cowan Excitatory-Inhibitory Oscillator (1972)
+
+** The Papers
+
+Wilson HR, Cowan JD. "Excitatory and inhibitory interactions in
+localized populations of model neurons." /Biophys J/ 1972, 12:1-24.
+
+Wilson HR, Cowan JD. "A mathematical theory of the functional dynamics
+of cortical and thalamic nervous tissue." /Kybernetik/ 1973, 13:55-80.
+
+** The Circuit
+
+Two populations — excitatory (E) and inhibitory (I) — with sigmoidal
+activation:
+
+\begin{align}
+\tau_E \frac{dE}{dt} &= -E + S_E(w_{EE} E - w_{EI} I + P) \\
+\tau_I \frac{dI}{dt} &= -I + S_I(w_{IE} E - w_{II} I + Q)
+\end{align}
+
+*Parameters*: ~8-10 (2 time constants, 4 weights, 2-4 sigmoid
+parameters).
+
+** The Insight
+
+The E-I interaction is the fundamental motif of cortical dynamics. From
+just two populations: oscillations (rhythms), bistability (working
+memory), hysteresis (persistent activity), and spatiotemporal patterns
+(waves). This is the rate-model foundation that everything else builds
+on — including our rate engine.
+
+** Computational Explorations
+
+- /Textbooks/: Ermentrout & Terman (2010, extensive phase-plane
+  analysis), Dayan & Abbott (2001), Gerstner et al. (2014), Izhikevich
+  (2007)
+- /Reviews/: Destexhe & Sejnowski (2009), "The Wilson-Cowan model, 36
+  years later," /Biol Cybern/ 101:1-2; Wilson (2021), "Evolution of the
+  Wilson-Cowan equations," /Biol Cybern/ 115:643-653
+- /Neural field theory/: Amari S (1977), "Dynamics of pattern formation
+  in lateral-inhibition type neural fields," /Biol Cybern/ 27:77-87 —
+  Mexican hat connectivity, localized excitation states
+- /Software/: Open Source Brain (Wilson-Cowan project), Neuromatch
+  Academy tutorials, Brian2 implementations
+
+** For bravli
+
+Our rate engine (=simulation/rate_engine.py=) is essentially a
+generalized Wilson-Cowan simulator. A dedicated lesson could explore the
+E-I phase diagram: vary $w_{EI}/w_{IE}$ ratio and external drive, map
+oscillatory vs stable vs bistable regimes. Natural lead-in to the Brunel
+network (already Lesson 15) and to cortical rhythms.
+
+* 6. Hopfield Network (1982)
+
+** The Papers
+
+Hopfield JJ. "Neural networks and physical systems with emergent
+collective computational abilities." /Proc Natl Acad Sci USA/ 1982,
+79(8):2554-2558.
+
+Hopfield JJ. "Neurons with graded response have collective computational
+properties like those of two-state neurons." /Proc Natl Acad Sci USA/
+1984, 81(10):3088-3092.
+
+** The Circuit
+
+N binary neurons ($s_i = \pm 1$), fully connected with symmetric weights
+($w_{ij} = w_{ji}$), no self-connections. Asynchronous update:
+$s_i \to \text{sign}(\sum_j w_{ij} s_j - \theta_i)$.
+
+Energy function: $E = -\frac{1}{2}\sum_{ij} w_{ij} s_i s_j + \sum_i
+\theta_i s_i$. Dynamics minimize $E$; memories are local minima
+(attractors).
+
+*Parameters*: $N(N-1)/2$ weights + $N$ thresholds = $O(N^2)$.
+
+Capacity: $\alpha_c \approx 0.14$ — can reliably store ~14% of $N$
+patterns.
+
+** The Insight
+
+Content-addressable memory from physics. Store patterns as attractors of
+an energy landscape; recall from partial cues by relaxation. The bridge
+from spin glasses (Edwards-Anderson 1975, Sherrington-Kirkpatrick 1975)
+to associative memory. Collective computation without programming — the
+computation IS the relaxation dynamics.
+
+** Computational Explorations
+
+- /Spin glass theory/: Amit DJ, Gutfreund H, Sompolinsky H (1985),
+  "Storing infinite numbers of patterns in a spin-glass model," /Phys
+  Rev Lett/ 55:1530-1533; Gardner E (1988), "The space of interactions
+  in neural network models," /J Phys A/ 21:257-270
+- /Boltzmann machines/: Ackley DH, Hinton GE, Sejnowski TJ (1985), "A
+  learning algorithm for Boltzmann machines," /Cognitive Sci/ 9:147-169
+- /Modern Hopfield/: Ramsauer H et al. (2020), "Hopfield Networks is All
+  You Need," /ICLR/; Krotov D, Hopfield JJ (2016), "Dense associative
+  memory for pattern recognition," /NeurIPS/ — exponential capacity,
+  connection to transformer attention
+- /Textbooks/: Hertz, Krogh & Palmer (1991, /Introduction to the Theory
+  of Neural Computation/, comprehensive spin glass treatment); Amit
+  (1989, /Modeling Brain Function/); Dayan & Abbott Ch. 7
+
+** For bravli
+
+A physicist's dream lesson. Implement the Hopfield network, derive the
+energy function, show pattern storage and retrieval, compute the capacity
+limit, then draw the explicit connection: the Hopfield energy IS the
+Sherrington-Kirkpatrick Hamiltonian. Modern Hopfield networks connect to
+transformer attention — the bridge from 1982 spin glasses to 2020 LLMs.
+
+* 7. Marr-Albus Cerebellum (1969/1971)
+
+** The Papers
+
+Marr D. "A theory of cerebellar cortex." /J Physiol/ 1969, 202:437-470.
+
+Albus JS. "A theory of cerebellar function." /Math Biosci/ 1971,
+10:25-61.
+
+** The Circuit
+
+Three layers:
+1. *Mossy fibers (MF)*: Input (~200-300 dimensions)
+2. *Granule cells (GC)*: Massive expansion (~10^{5}-10^{6} cells, sparse
+   activation) via parallel fibers (PF)
+3. *Purkinje cells (PC)*: Output. Each receives ~10^5 PF inputs (weak)
+   + exactly 1 climbing fiber (CF, strong teaching signal from inferior
+   olive)
+
+Learning rule: PF-PC synapses undergo long-term depression (LTD) when
+PF and CF are coactive → supervised, error-driven learning.
+
+*Parameters*: ~6-10 (expansion factor, sparseness, learning rate, CF
+strength, LTD time window).
+
+** The Insight
+
+The cerebellum is a supervised learning machine. Granule cells expand
+input dimensionality (like a kernel trick), making patterns linearly
+separable. Purkinje cells are perceptrons that learn input-output
+mappings via climbing fiber error signals. This is the biological
+implementation of the perceptron learning rule — and the adaptive
+filter.
+
+** Computational Explorations
+
+- /Perceptron connection/: Rosenblatt F (1958), "The perceptron," /Psych
+  Rev/ 65:386-408
+- /Adaptive filter interpretation/: Dean P, Porrill J, Ekerot CF,
+  Jörntell H (2010), "The cerebellar microcircuit as an adaptive
+  filter," /Nat Rev Neurosci/ 11:30-43
+- /Robotics/: Albus JS (1975), "CMAC: the cerebellar model articulation
+  controller," /J Dyn Syst Meas Control/ 97:220-227
+- /Textbooks/: Dayan & Abbott Ch. 6, Gerstner et al. (2014)
+
+** For bravli
+
+A beautiful bridge between neuroscience and machine learning. Implement
+the minimal Marr-Albus circuit: random expansion (granule cells) +
+perceptron learning (Purkinje cells) + climbing fiber error signal. Show
+that it learns to cancel predictable sensory consequences of movement
+(forward model). Compare to the Widrow-Hoff/LMS algorithm.
+
+* 8. Brunel's Balanced E-I Network (2000)
+
+** The Paper
+
+Brunel N. "Dynamics of sparsely connected networks of excitatory and
+inhibitory spiking neurons." /J Comput Neurosci/ 2000, 8:183-208.
+
+Theoretical foundation: van Vreeswijk C, Sompolinsky H. "Chaos in
+neuronal networks with balanced excitatory and inhibitory activity."
+/Science/ 1996, 274:1724-1726.
+
+** The Circuit
+
+$N_E = 10{,}000$ excitatory + $N_I = 2{,}500$ inhibitory LIF neurons.
+Sparse random connectivity ($\epsilon = 0.1$). Excitatory weight $J$;
+inhibitory weight $-gJ$ ($g > 1$). External Poisson drive at rate
+$\nu_{ext}$.
+
+*Parameters*: ~12 (5 LIF parameters, 4 synaptic, 3 network). Phase
+diagram controlled by two parameters: $\eta = \nu_{ext}/\nu_{th}$
+(drive) and $g$ (E-I balance).
+
+Four regimes: synchronous regular (SR), asynchronous regular (AR),
+synchronous irregular (SI), asynchronous irregular (AI). Cortex operates
+in the AI regime.
+
+** The Insight
+
+The balanced state: excitation and inhibition are both large but
+approximately cancel, producing fluctuation-driven irregular firing that
+matches /in vivo/ cortical recordings. This balance emerges naturally
+from the network structure without fine-tuning. The irregularity is not
+noise — it is a dynamical consequence of the balanced state.
+
+** Computational Explorations
+
+- /Theory/: van Vreeswijk & Sompolinsky (1998), "Chaotic balanced state
+  in a model of cortical circuits," /Neural Comput/ 10:1321-1371;
+  Renart A et al. (2010), "The asynchronous state in cortical circuits,"
+  /Science/ 327:587-590
+- /Software/: Brian2 (Brunel network examples), PyNN (standard example),
+  NEST (=brunel_delta_nest.py=), Arbor (tutorial), Open Source Brain
+- /Textbooks/: Gerstner et al. (2014, online exercises), Dayan & Abbott
+
+** Status in bravli
+
+*Done* — Lesson 15 (=codev/15-brunel-phase-diagram.org=): full
+implementation with phase diagram exploration.
+
+* 9. Braitenberg Vehicles (1984)
+
+** The Book
+
+Braitenberg V. /Vehicles: Experiments in Synthetic Psychology./
+Cambridge, MA: MIT Press, 1984.
+
+** The Circuit
+
+Two sensors + two motors. Wiring topology determines behavior:
+
+| Wiring | Connection | Behavior |
+|--------+------------+----------|
+| Ipsilateral, excitatory | Left sensor → left motor | Aggression (approaches stimulus) |
+| Contralateral, excitatory | Left sensor → right motor | Fear (turns away) |
+| Ipsilateral, inhibitory | Left sensor → left motor | Love (approaches, slows) |
+| Contralateral, inhibitory | Left sensor → right motor | Exploration |
+
+*Parameters*: 4 (2 connection weights + 2 connection types).
+
+** The Insight
+
+Purposeful-looking behavior emerges from connectivity, not from
+intelligence. A two-wire circuit produces "aggression" or "fear." An
+observer attributes intention and emotion to what is, in fact, trivial
+sensorimotor coupling. The lesson: never infer complex internal states
+from complex-looking behavior.
+
+** Computational Explorations
+
+- /Behavior-based robotics/: Brooks RA (1986), "A robust layered control
+  system for a mobile robot," /IEEE J Robotics Automation/ RA-2:14-23
+- /Modern extensions/: Patton PE, Custance D (2020), "Braitenberg
+  vehicles as computational tools for research in neuroscience," /Front
+  Bioeng Biotechnol/ 8:565963; Dvoretskii S et al. (2022), "Braitenberg
+  vehicles as developmental neurosimulation," /Artif Life/ 28:369-395
+- /Software/: Python Processing.py simulators, Arduino physical
+  implementations, Unity game engine frameworks
+
+** For bravli
+
+Close the sensorimotor loop. Our visual world (=simulation/
+visual_world.py=) provides the input; a Braitenberg vehicle provides the
+output. The frog doesn't just see the bug — it chases it. Wire the
+transient cells (Lesson 21) to motors. The vehicle's trajectory emerges
+from the retinal circuit's prediction errors. A beautiful demonstration
+that perception and action are inseparable.
+
+* 10. Winner-Take-All / Competitive Inhibition
+
+** The Papers
+
+Grossberg S. "Contour enhancement, short term memory, and constancies in
+reverberating neural networks." /Studies Appl Math/ 1973, 52:213-257.
+
+Amari S, Arbib MA. "Competition and cooperation in neural nets." In:
+/Systems Neuroscience/, Academic Press, 1977, 119-165.
+
+** The Circuit
+
+N excitatory neurons with shared lateral inhibition. Each receives
+external input; all inhibit each other (directly or via an inhibitory
+pool). The strongest input suppresses all others.
+
+Soft WTA: relative amplification (contrast enhancement). Hard WTA:
+winner silences all losers.
+
+*Parameters*: 2-4 (lateral inhibition strength, self-excitation, sigmoid
+parameters).
+
+** The Insight
+
+Selection from competition. Categorical decisions emerge from graded
+inputs via lateral inhibition. This is how the brain chooses: attention
+selects one object, decisions pick one action, perception categorizes
+one percept. The mechanism is universal — the same circuit appears in
+retina (surround suppression), cortex (orientation columns), and
+prefrontal cortex (decision making).
+
+** Computational Explorations
+
+- /Decision making/: Usher M, McClelland JL (2001), "The time course of
+  perceptual choice: the leaky, competing accumulator model," /Psych
+  Rev/ 108:550-592; Wang XJ (2002), "Probabilistic decision making by
+  slow reverberation in cortical circuits," /Neuron/ 36:955-968
+- /Attention/: Itti L, Koch C (2001), "Computational modelling of visual
+  attention," /Nat Rev Neurosci/ 2:194-203
+- /Theory/: Maass W (2000), "On the computational power of winner-take-
+  all," /Neural Comput/ 12:2519-2535
+- /Textbooks/: Dayan & Abbott (recurrent networks and competition)
+
+** For bravli
+
+Two natural applications: (1) add a WTA layer after the frog retina to
+select the most salient bug when multiple are present — attention from
+lateral inhibition; (2) use WTA as the decision stage in the UPE
+circuit (Lesson 20) — the cortex decides between competing
+interpretations by competitive inhibition among prediction-error
+channels.
+
+* 11. Central Pattern Generator — Half-Center Oscillator
+
+** The Papers
+
+Brown TG. "The intrinsic factors in the act of progression in the
+mammal." /Proc R Soc B/ 1911, 84:308-319.
+
+Getting PA. "Emerging principles governing the operation of neural
+networks." /Annu Rev Neurosci/ 1989, 12:185-204.
+
+Marder E, Bucher D. "Central pattern generators and the control of
+rhythmic movements." /Curr Biol/ 2001, 11:R986-R996.
+
+** The Circuit
+
+Two neurons (or populations) with reciprocal inhibition + adaptation:
+
+1. Neuron A fires → inhibits Neuron B
+2. Neuron A adapts/fatigues → weakens
+3. Neuron B escapes inhibition → fires → inhibits A
+4. Cycle repeats → alternating rhythm
+
+*Parameters*: 4-8 (mutual inhibition strengths, adaptation time
+constants, synaptic time constants).
+
+** The Insight
+
+Rhythmic motor patterns — walking, swimming, breathing — are generated
+locally in the spinal cord, without rhythmic input from the brain. The
+CPG is an autonomous oscillator. Neuromodulation can reconfigure the
+SAME circuit for different behaviors (fast walk, slow walk, gallop).
+Degeneracy: many parameter combinations produce the same rhythm.
+
+** Computational Explorations
+
+- /STG model system/: Marder lab — 30 neurons, fully mapped connectivity
+  in the crustacean stomatogastric ganglion. Scholarpedia article.
+- /Robotics/: Ijspeert AJ (2008), "Central pattern generators for
+  locomotion control in animals and robots: a review," /Neural Networks/
+  21:642-653
+- /Matsuoka oscillator/: Matsuoka K (1985), "Sustained oscillations
+  generated by mutually inhibiting neurons with adaptation," /Biol
+  Cybern/ 52:367-376 — widely used in robotics
+- /Theory/: Marder E, Calabrese RL (1996), "Principles of rhythmic motor
+  pattern generation," /Physiol Rev/ 76:687-717
+- /Textbooks/: Izhikevich (2007), Ermentrout & Terman (2010)
+
+** For bravli
+
+The frog sees the bug (Lesson 21) → the WTA selects it → the CPG
+generates the tongue strike. This is the complete sensorimotor arc: DoG
+→ prediction error → selection → rhythmic action. Implement a simple
+half-center oscillator using our rate engine. The adaptation mechanism is
+trivially added to =RateCircuit= as a slow negative self-feedback term.
+
+* 12. Oja's Rule — Hebbian PCA (1982)
+
+** The Papers
+
+Oja E. "A simplified neuron model as a principal component analyzer."
+/J Math Biol/ 1982, 15:267-273.
+
+Sanger TD. "Optimal unsupervised learning in a single-layer linear
+feedforward neural network." /Neural Networks/ 1989, 2:459-473.
+
+** The Circuit
+
+One linear neuron, $N$ inputs: $y = \mathbf{w} \cdot \mathbf{x}$.
+
+Learning rule: $\Delta \mathbf{w} = \eta \, y \, (\mathbf{x} -
+y \, \mathbf{w})$. First term is Hebb (correlated activity strengthens
+connection); second term is weight decay proportional to $y^2$
+(normalization).
+
+*Parameters*: 1-2 (learning rate $\eta$, optional weight constraint).
+
+** The Insight
+
+Unsupervised learning via local Hebbian plasticity extracts statistical
+structure. Oja's rule converges to the first principal component of the
+input distribution. Sanger's generalized Hebbian algorithm (GHA) extracts
+multiple PCs. This is the bridge between neuroscience (Hebb's postulate)
+and statistics (PCA) — the brain does dimensionality reduction with local
+learning rules.
+
+** Computational Explorations
+
+- /BCM theory/: Bienenstock EL, Cooper LN, Munro PW (1982), "Theory for
+  the development of neuron selectivity," /J Neurosci/ 2:32-48 — sliding
+  threshold for LTP/LTD, explains orientation selectivity development
+- /ICA connection/: Bell AJ, Sejnowski TJ (1995), "An information-
+  maximization approach to blind separation," /Neural Comput/ 7:1129-1159
+- /Modern/: Oja's rule connects to self-supervised learning (contrastive
+  learning has Hebbian-like principles); recent work on biologically
+  plausible alternatives to backpropagation
+- /Textbooks/: Dayan & Abbott Ch. 8, Hertz, Krogh & Palmer (1991),
+  Gerstner & Kistler (2002)
+- /Software/: Neuronal Dynamics exercises (EPFL), Scholarpedia article
+
+** For bravli
+
+The deepest lesson: learning extracts structure. Apply Oja's rule to the
+retinal output (Lesson 21) → the first principal component of the bug
+detector's activity reveals the bug's trajectory. Apply to cortical
+activity (Lesson 20) → PCA of UPE signals reveals the latent statistics.
+Then show Olshausen-Field sparse coding as the nonlinear extension: the
+V1 receptive fields ARE the sparse code that Oja's rule approximates.
+
+* The Grand Arc: From Logic to Understanding
+
+The twelve circuits trace the history of a question: /what does it mean
+for matter to compute?/
+
+| Decade | Circuit | Question |
+|--------+---------+----------|
+| 1940s | McCulloch-Pitts | Can neurons compute? |
+| 1950s | Hodgkin-Huxley | How does a neuron fire? |
+| 1950s | Lettvin | What does a sensory circuit compute? |
+| 1960s | Hubel-Wiesel, Marr-Albus | How does hierarchy create selectivity? |
+| 1970s | Wilson-Cowan, Grossberg/Amari | What do populations do? |
+| 1980s | Hopfield, Oja, Braitenberg | How do networks learn/remember/act? |
+| 1910s/2000s | CPG, Brunel | How does rhythm/balance emerge? |
+
+For bravli and MāyāLucIA, these circuits are not historical curiosities.
+They are the building blocks of understanding. Each one is a literate org
+lesson waiting to be written, a simulation waiting to be run, a bridge
+from equations to insight.
+
+** The Roadmap
+
+Already done:
+- [X] Lesson 15: Brunel balanced E-I network (phase diagram)
+- [X] Lesson 20: Wilmes & Senn UPE circuit (predictive coding with plasticity)
+- [X] Lesson 21: Lettvin's frog retina (predictive coding without plasticity)
+
+Natural next lessons, in dependency order:
+
+1. *Wilson-Cowan oscillator* (Lesson 22?) — E-I phase diagram. Uses our
+   rate engine directly. Foundation for understanding cortical rhythms.
+
+2. *Hopfield network* (Lesson 23?) — Content-addressable memory. The
+   physicist's bridge: spin glass → associative memory → transformer
+   attention. Binary neurons, energy function, capacity.
+
+3. *Braitenberg + CPG* (Lesson 24?) — The frog catches the bug.
+   Sensorimotor loop: retinal prediction error → WTA selection → CPG
+   tongue strike. Uses visual world from Lesson 21.
+
+4. *Hubel-Wiesel / Olshausen-Field* (Lesson 25?) — From retina to
+   cortex. Gabor filters, orientation selectivity, sparse coding on
+   natural images. Connects Lesson 21 (retina) to Lesson 20 (cortex).
+
+5. *Oja's rule + BCM* (Lesson 26?) — Learning without a teacher.
+   Hebbian PCA, sliding threshold, connection to sparse coding (Lesson
+   25) and plasticity (Lesson 20).
+
+6. *Marr-Albus cerebellum* (Lesson 27?) — Supervised learning. Forward
+   model, adaptive filter, the climbing fiber as nature's backpropagation.
+
+7. *McCulloch-Pitts* (Lesson 28?) — Logic from neurons. The historical
+   starting point, taught last as a reflection: what was gained and lost
+   when the field moved from logic to dynamics.
+
+8. *Hodgkin-Huxley* (Lesson 29?) — The biophysics beneath. HH →
+   FitzHugh-Nagumo → Izhikevich → LIF. What our spiking engine
+   simplifies away, and what that simplification costs.
+
+Each lesson reuses existing infrastructure (rate engine, visual world,
+plasticity rules, test framework) and extends it incrementally. The
+lessons are not isolated — they form a web of cross-references,
+each illuminating the others.
+
+* Core References
+
+** Textbooks
+
+- Dayan P, Abbott LF. /Theoretical Neuroscience: Computational and
+  Mathematical Modeling of Neural Systems./ MIT Press, 2001.
+- Ermentrout GB, Terman DH. /Mathematical Foundations of Neuroscience./
+  Springer, 2010.
+- Gerstner W, Kistler WM, Naud R, Paninski L. /Neuronal Dynamics: From
+  Single Neurons to Networks and Models of Cognition./ Cambridge, 2014.
+  Free online: neuronaldynamics.epfl.ch
+- Hertz J, Krogh A, Palmer RG. /Introduction to the Theory of Neural
+  Computation./ Addison-Wesley, 1991.
+- Izhikevich EM. /Dynamical Systems in Neuroscience: The Geometry of
+  Excitability and Bursting./ MIT Press, 2007.
+- Braitenberg V. /Vehicles: Experiments in Synthetic Psychology./ MIT
+  Press, 1984.
+
+** Software
+
+- Brian2: briansimulator.org (Python spiking network simulator)
+- ModelDB: modeldb.science (Yale, model database)
+- NEST: nest-simulator.org (large-scale spiking networks)
+- Nengo: nengo.ai (Neural Engineering Framework)
+- NEURON: neuron.yale.edu (biophysically detailed neurons)
+- Open Source Brain: opensourcebrain.org (model sharing)
+- Neuromatch Academy: compneuro.neuromatch.io (educational tutorials)
