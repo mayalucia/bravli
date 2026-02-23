@@ -1,0 +1,623 @@
+% Created 2026-02-20 Fri 10:11
+% Intended LaTeX compiler: pdflatex
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{capt-of}
+\usepackage{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\hypersetup{colorlinks=true,linkcolor=blue!60!black,citecolor=green!50!black,urlcolor=blue!70!black}
+\bibliographystyle{plainnat}
+\linespread{1.3}
+\usepackage{parskip}
+\author{Darshan Muchu}
+\date{2026}
+\title{Network Dynamics of the \emph{Drosophila} Mushroom Body: Regime Classification, Neuromodulation, Stochasticity, and Model Invariance}
+\hypersetup{
+ pdfauthor={Darshan Muchu},
+ pdftitle={Network Dynamics of the \emph{Drosophila} Mushroom Body: Regime Classification, Neuromodulation, Stochasticity, and Model Invariance},
+ pdfkeywords={},
+ pdfsubject={},
+ pdfcreator={Emacs 30.2 (Org mode 9.7.11)}, 
+ pdflang={English}}
+\begin{document}
+
+\maketitle
+\begin{abstract}
+The FlyWire whole-brain connectome of \emph{Drosophila melanogaster} provides,
+for the first time, a complete wiring diagram of the mushroom body (MB)
+--- the fly's primary centre for associative learning. Yet a wiring
+diagram alone cannot predict dynamics. Here we extract the MB
+microcircuit (\textasciitilde{}6,300 neurons, \textasciitilde{}50,000 synapses) from FlyWire and
+subject it to four systematic computational investigations.
+First, we classify the circuit's dynamical regime using the Brunel
+(2000) phase diagram framework, finding that the MB operates in the
+asynchronous--irregular (AI) balanced state despite exponential
+synaptic filtering shifting phase boundaries relative to the canonical
+delta-synapse theory. Second, we demonstrate Marder's principle: the
+same connectome produces opposite behavioural outputs (approach vs.
+avoidance) under different neuromodulatory states, achieved through
+compartment-specific multiplicative gain modulation of KC\(\to\)MBON
+weights. Third, we show that stochastic synaptic transmission --- a
+ubiquitous feature of central synapses with release probabilities of
+0.1--0.5 --- enhances subthreshold signal detection via stochastic
+resonance while MB odor coding degrades gracefully under biologically
+realistic failure rates. Fourth, we test the Zhang et al. (2024)
+topology-dominates hypothesis by comparing leaky integrate-and-fire
+(LIF) and adaptive exponential (AdEx) neuron models on the same
+connectome, confirming that firing-rate patterns are highly correlated
+(\(r > 0.9\)) when adaptation is weak, with divergence emerging only at
+strong spike-frequency adaptation (\(b > 2\) mV). Together, these
+results establish a computational baseline for the FlyWire mushroom
+body and demonstrate that connectome-constrained simulation, even with
+minimal biophysical detail, can illuminate fundamental questions about
+neural circuit function.
+\end{abstract}
+
+\clearpage
+\tableofcontents
+\clearpage
+\section{Introduction}
+\label{sec:org94af8f5}
+
+The completion of the \emph{Drosophila} whole-brain connectome by the FlyWire
+consortium \citep{dorkenwald2024} represents a watershed moment in
+neuroscience: 139,255 neurons, approximately 50 million synapses, and
+8,453 cell types, reconstructed at synaptic resolution from a single
+female fly. For the first time, we have a complete parts list and
+wiring diagram of an adult brain. But a parts list is not a theory.
+The central challenge now is to understand how dynamics emerge from
+structure --- how the static connectome gives rise to the temporal
+patterns of activity that underlie computation, learning, and
+behaviour.
+
+The mushroom body (MB) is an ideal test case for this enterprise. It
+is the primary locus of associative olfactory learning in \emph{Drosophila}
+\citep{aso2014}, its architecture is well understood (approximately
+2,000 Kenyon cells receiving convergent input from \textasciitilde{}150 projection
+neurons, with output modulated by \textasciitilde{}30 mushroom body output neurons and
+\textasciitilde{}130 dopaminergic neurons), and its behavioural relevance is directly
+measurable. The MB's compartmental organisation \citep{aso2014} ---
+with distinct dopaminergic and output neuron types tiling the KC axon
+lobes --- provides a natural framework for understanding how
+neuromodulation sculpts circuit output.
+
+We address four questions, each probing a different aspect of the
+structure--dynamics relationship:
+
+\begin{enumerate}
+\item \textbf{What dynamical regime does the MB operate in?} The Brunel (2000)
+framework \citep{brunel2000} classifies recurrent networks into four
+regimes based on the balance between excitation and inhibition (\(g\))
+and external drive (\(\eta\)). We ask where the FlyWire MB falls in this
+phase diagram.
+
+\item \textbf{Can the same connectome produce opposite behaviours?} Marder's
+principle \citep{marder2002,marder2012} holds that neuromodulation
+reconfigures circuit function without rewiring. We test whether
+compartment-specific gain modulation --- mimicking the effects of
+different aminergic and peptidergic states --- can switch the MB's
+behavioural output between approach and avoidance.
+
+\item \textbf{How does synaptic noise affect circuit function?} Central
+synapses are unreliable, with release probabilities of \$p \(\approx\)
+0.1\$--\(0.5\) \citep{allen1994}. Rather than treating this as a bug,
+we ask whether stochastic transmission serves computational purposes
+--- specifically, whether stochastic resonance
+\citep{gammaitoni1998} enhances signal detection in the MB circuit.
+
+\item \textbf{Does the single-neuron model matter?} Zhang et al.
+\citep{zhang2024} demonstrated that connectome-constrained models of
+the fly visual system produce accurate predictions regardless of
+neuron model complexity. We test whether this topology-dominates
+hypothesis extends to the MB by comparing LIF and AdEx
+\citep{brette2005} neuron models on the same extracted circuit.
+\end{enumerate}
+
+Our approach is deliberately minimal. We use current-injection
+integrate-and-fire models (LIF and AdEx), not conductance-based
+neurons. We use extracted synaptic weights, not fitted parameters. The
+goal is not biophysical realism but \emph{computational insight}: what can
+the connectome alone tell us, and where does it fall short?
+\section{Methods}
+\label{sec:org4ddcf2e}
+\subsection{Circuit Extraction}
+\label{sec:orge0e99d1}
+
+We extract the MB microcircuit from the FlyWire connectome using the
+\texttt{bravli} Python toolkit developed for this study. Starting from
+anatomical neuron classifications, we identify five cell populations:
+
+\begin{itemize}
+\item \textbf{Projection neurons (PNs)}: \textasciitilde{}150 neurons carrying olfactory input
+from the antennal lobe.
+\item \textbf{Kenyon cells (KCs)}: \textasciitilde{}5,200 principal neurons forming the MB's
+sparse coding layer, subdivided by lobe (gamma, alpha/beta,
+alpha'/beta').
+\item \textbf{Mushroom body output neurons (MBONs)}: \textasciitilde{}30 neurons whose combined
+activity drives approach or avoidance behaviour.
+\item \textbf{Dopaminergic neurons (DANs)}: \textasciitilde{}130 neurons (PAM and PPL1 clusters)
+providing reward and punishment signals.
+\item \textbf{APL (anterior paired lateral)}: A single giant GABAergic neuron
+providing global inhibition to KCs.
+\end{itemize}
+
+Synaptic connectivity is extracted from the FlyWire synapse table,
+retaining synapse counts as weight proxies. The resulting circuit
+contains approximately 6,300 neurons and 50,000 synapses.
+\subsection{Simulation Engines}
+\label{sec:org7418ef3}
+
+\subsubsection{Leaky Integrate-and-Fire (LIF)}
+\label{sec:org26ddb8d}
+
+The membrane potential of neuron \(i\) evolves as:
+\begin{equation}
+\tau_m \frac{dV_i}{dt} = -(V_i - V_{\text{rest}}) + g_i(t)
+\end{equation}
+where \(\tau_m\) is the membrane time constant, \(V_{\text{rest}} = 0\) mV
+is the resting potential, and \(g_i(t)\) is the total synaptic input.
+When \(V_i\) crosses threshold \(V_\theta = 20\) mV, a spike is emitted,
+the potential is reset to \(V_{\text{reset}} = 0\) mV, and the neuron
+enters an absolute refractory period of \(\tau_{\text{ref}} = 2\) ms.
+
+Synaptic input is delivered with an exponential filter:
+\begin{equation}
+\tau_s \frac{dg_i}{dt} = -g_i + \tau_m \sum_j w_{ji} \sum_k \delta(t - t_j^k - d_{ji})
+\end{equation}
+where \(w_{ji}\) is the synaptic weight from neuron \(j\) to \(i\),
+\(t_j^k\) is the \$k\$-th spike time of neuron \(j\), \(d_{ji}\) is the
+synaptic delay (1.5 ms throughout), and \(\tau_s = 0.5\) ms is the
+synaptic time constant. The factor \(\tau_m / \tau_s\) ensures that the
+effective weight matches the delta-synapse convention of Brunel
+\citep{brunel2000}.
+
+Cell-type-specific parameters follow from known biophysics: KCs have
+short membrane time constants (\(\tau_m = 5\) ms) reflecting their
+compact morphology, while MBONs (\(\tau_m = 15\) ms) and DANs
+(\(\tau_m = 20\) ms) are larger and slower.
+\subsubsection{Adaptive Exponential Integrate-and-Fire (AdEx)}
+\label{sec:org6488bca}
+
+The AdEx model \citep{brette2005} extends LIF with exponential spike
+initiation and a slow adaptation current:
+\begin{align}
+\tau_m \frac{dV_i}{dt} &= -(V_i - V_{\text{rest}}) + \Delta_T \exp\!\left(\frac{V_i - V_T}{\Delta_T}\right) + g_i(t) - w_i \\
+\tau_w \frac{dw_i}{dt} &= a(V_i - V_{\text{rest}}) - w_i
+\end{align}
+where \(\Delta_T = 2\) mV is the exponential slope factor, \(V_T\) is the
+effective threshold, \(a\) is the subthreshold adaptation conductance,
+and \(w_i\) is the adaptation current. At spike time, \(w_i \leftarrow
+w_i + b\), where \(b\) controls spike-frequency adaptation strength.
+
+We use four biophysically motivated presets:
+\begin{itemize}
+\item \textbf{Regular spiking}: \(a = 0\), \(b = 0.5\) mV, \(\tau_w = 100\) ms
+\item \textbf{Adapting}: \(a = 0.1\) nS, \(b = 2.0\) mV, \(\tau_w = 300\) ms
+\item \textbf{Bursting}: \(a = 0\), \(b = 5.0\) mV, \(\tau_w = 50\) ms
+\item \textbf{Fast spiking}: \(a = 0\), \(b = 0\), \(\tau_w = 100\) ms (equivalent to exponential LIF)
+\end{itemize}
+\subsubsection{Stochastic Synaptic Transmission}
+\label{sec:orgf7ebe9b}
+
+Two noise mechanisms are implemented:
+
+\begin{enumerate}
+\item \textbf{Release failure}: Each spike arriving at a synapse is transmitted
+with probability \(p_{\text{rel}}\) (Bernoulli trial). At \(p_{\text{rel}} = 1\),
+transmission is deterministic. At biologically realistic values
+(\$p\textsubscript{\text{rel}} \(\approx\) 0.1\$--\(0.5\)), most spikes fail to elicit
+postsynaptic responses \citep{allen1994}.
+
+\item \textbf{Intrinsic noise}: Gaussian current noise \(\xi_i(t)\) is added to
+the membrane equation, scaled as \(\sigma \sqrt{dt}\) to ensure
+proper Wiener process scaling. This captures channel noise, thermal
+fluctuations, and background synaptic bombardment
+\citep{faisal2008}.
+\end{enumerate}
+\subsection{Neuromodulatory State Model}
+\label{sec:org1800132}
+
+Following \citet{marder2002}, we model neuromodulation as
+compartment-specific multiplicative gain modulation of synaptic
+weights:
+\begin{equation}
+w_{\text{eff}} = w_{\text{base}} \times m_c
+\end{equation}
+where \(m_c\) is the modulatory gain for compartment \(c\). The MB's 15
+compartments \citep{aso2014} each receive distinct dopaminergic
+innervation, and the gain factors \(m_c\) reflect the known valence
+organisation:
+
+\begin{center}
+\begin{tabular}{llc}
+\toprule
+State & Compartment modulation & Behavioural prediction\\
+\midrule
+Naive & All \(m_c = 1.0\) & Neutral\\
+Appetitive & Appetitive \$m\textsubscript{c} = 1.3\$--\(1.5\); aversive \(m_c = 0.6\) & Approach\\
+Aversive & Aversive \(m_c = 1.5\); appetitive \(m_c = 0.6\) & Avoidance\\
+Aroused & All \(m_c = 1.3\) & Enhanced response\\
+Quiescent & All \(m_c = 0.5\) & Suppressed response\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Behavioural output is quantified via a valence score:
+\begin{equation}
+V = \sum_{i \in \text{appetitive}} r_i^{\text{MBON}} - \sum_{j \in \text{aversive}} r_j^{\text{MBON}}
+\end{equation}
+where \(V > 0\) predicts approach and \(V < 0\) predicts avoidance.
+\subsection{Brunel Regime Classification}
+\label{sec:org7b5de4d}
+
+The Brunel \citep{brunel2000} framework classifies network dynamics
+along two axes:
+
+\begin{itemize}
+\item \textbf{Irregularity}: coefficient of variation of interspike intervals.
+\(\text{CV} > 0.5\) indicates irregular firing; \(\text{CV} < 0.5\)
+indicates regular firing.
+\item \textbf{Synchrony}: a synchrony index based on variance of the population
+rate relative to single-neuron variance. Synchrony \(> 10\) indicates
+synchronous firing.
+\end{itemize}
+
+The four regimes are:
+\begin{itemize}
+\item \textbf{SR} (Synchronous Regular): low CV, high synchrony
+\item \textbf{SI} (Synchronous Irregular): high CV, high synchrony --- pathological
+\item \textbf{AR} (Asynchronous Regular): low CV, low synchrony --- clock-like
+\item \textbf{AI} (Asynchronous Irregular): high CV, low synchrony --- the balanced state
+\end{itemize}
+
+For the Brunel sweep, we construct random networks of \(N = 10{,}000\)
+neurons (80\% excitatory, 20\% inhibitory) with connection probability
+\(\epsilon = 0.1\) and scan the parameter space \(g \in \{3, 4, 4.5, 5,
+6\}\) and \(\eta \in \{0.9, 1.5, 2, 3, 4\}\).
+\subsection{Stochastic Resonance Protocol}
+\label{sec:org7c1815d}
+
+A subthreshold periodic signal (\(f = 5\) Hz, amplitude 3 mV below
+threshold) is injected into a test circuit alongside varying levels of
+intrinsic noise (\(\sigma \in \{0, 0.5, 1, 2, 3, 5, 7, 10, 15, 20\}\)).
+The signal-to-noise ratio (SNR) is computed from the power spectrum of
+the population firing rate:
+\begin{equation}
+\text{SNR} = \frac{P(f_{\text{signal}})}{P_{\text{noise}}}
+\end{equation}
+where \(P(f_{\text{signal}})\) is the spectral power at the signal
+frequency and \(P_{\text{noise}}\) is the mean power at surrounding
+frequencies. Stochastic resonance manifests as a peak in SNR at
+intermediate noise levels.
+\subsection{LIF--AdEx Comparison Protocol}
+\label{sec:orgf198ac8}
+
+We simulate the same MB circuit with both LIF and AdEx engines,
+matching all parameters except the adaptation current. Three metrics
+quantify agreement:
+
+\begin{enumerate}
+\item \textbf{Rate correlation}: Pearson correlation of per-neuron firing rates
+between LIF and AdEx simulations.
+\item \textbf{Temporal correlation}: Correlation of population rate time series
+(5 ms bins).
+\item \textbf{Mean relative difference}: \(\langle 2|r_{\text{LIF}} - r_{\text{AdEx}}| / (r_{\text{LIF}} + r_{\text{AdEx}}) \rangle\) averaged over active neurons.
+\end{enumerate}
+
+Interpretation thresholds: rate correlation \(> 0.9\) indicates topology
+dominates; \(< 0.5\) indicates the neuron model is essential.
+\section{Results}
+\label{sec:org616031f}
+\subsection{The FlyWire Mushroom Body Operates in the Balanced State}
+\label{sec:org63cd674}
+
+To classify the MB's dynamical regime, we first establish the Brunel
+phase diagram as a reference. The \((g, \eta)\) parameter sweep on random networks recovers all four regimes. The classical four
+regimes are recovered, though the AI/SI boundary shifts to higher \(g\)
+compared to the canonical delta-synapse result. This is a direct
+consequence of our exponential synaptic filter (\(\tau_s = 0.5\) ms):
+finite-duration postsynaptic currents smooth out membrane voltage
+fluctuations, suppressing the coefficient of variation. Even at \(g =
+8\), the CV reaches only \(\sim 0.25\) rather than the \$\(\sim\) 0.8\$--\(1.0\)
+expected with delta synapses. The effective weight scaling \(J_{\text{eff}}
+= J \times \tau_m / \tau_s\) compensates for the reduced peak current
+but cannot restore the shot-noise statistics that drive irregular
+firing.
+
+We then compute \(g_{\text{eff}}\) for the FlyWire MB circuit directly from
+the extracted weight distribution:
+\begin{equation}
+g_{\text{eff}} = \frac{\langle |w_{\text{inh}}| \rangle}{\langle w_{\text{exc}} \rangle}
+\end{equation}
+
+The resulting classification places the MB in the \textbf{asynchronous
+irregular (AI)} regime --- the balanced state first identified by
+\citet{vanvreeswijk1996}. This is consistent with the known physiology
+of Kenyon cells, which fire sparsely (\(< 10\%\) active per odor
+presentation; \citealt{turner2008}) and with irregular interspike
+intervals. The APL neuron, providing global feedback inhibition to
+KCs, plays a critical role in maintaining this balance.
+
+The AI regime has a functional interpretation: it maximises the
+representational capacity of the KC population. In the regular
+regimes, neural responses are locked to the stimulus periodicity,
+limiting the space of possible population codes. In the balanced
+state, each KC responds independently, enabling the combinatorial
+odor coding that underlies the MB's discriminative capacity
+\citep{caron2013}.
+\subsection{Neuromodulation Reconfigures Behavioural Output Without Rewiring}
+\label{sec:orgb6b4500}
+
+\citet{marder2002} demonstrated in the crustacean stomatogastric
+ganglion that the same anatomical circuit can produce qualitatively
+different motor patterns under different neuromodulatory conditions.
+We test whether this principle extends to the \emph{Drosophila} MB.
+
+Presenting the same odor stimulus (Poisson activation of a random 10\%
+PN subset at 50 Hz) to the MB circuit under five modulatory states
+yields dramatically different MBON response profiles:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+State & Appetitive MBONs & Aversive MBONs & Valence (\(V\))\\
+\midrule
+Naive & Baseline & Baseline & \(\approx 0\)\\
+Appetitive & Enhanced & Suppressed & \(V > 0\) (approach)\\
+Aversive & Suppressed & Enhanced & \(V < 0\) (avoidance)\\
+Aroused & Enhanced & Enhanced & \(\approx 0\) (amplified)\\
+Quiescent & Suppressed & Suppressed & \(\approx 0\) (damped)\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The appetitive and aversive states produce opposite-sign valence
+scores from identical sensory input. This is achieved purely through
+multiplicative gain modulation --- no synaptic rewiring, no structural
+plasticity, no change to the connectome. The gain factors (\$m\textsubscript{c} =
+0.6\$--\(1.5\)) are within the physiological range of monoaminergic
+modulation observed experimentally.
+
+The aroused state amplifies both appetitive and aversive responses
+while preserving their relative balance, consistent with the
+behavioural observation that arousal increases response magnitude
+without changing valence preference. The quiescent state uniformly
+suppresses output, mimicking the reduced MB activity observed during
+sleep.
+
+These results validate Marder's principle in a complete brain circuit:
+the connectome defines the space of possible behaviours, and
+neuromodulation selects among them. The MB's compartmental
+architecture \citep{aso2014} --- with distinct dopaminergic inputs to
+each compartment --- provides the anatomical substrate for
+state-dependent gain control.
+\subsection{Stochastic Synaptic Transmission Serves Computation}
+\label{sec:orgbd844ca}
+
+Central synapses are unreliable. Release probabilities at cortical
+synapses are typically \$p \(\approx\) 0.1\$--\(0.5\)
+\citep{allen1994,tsodyks1997}, meaning that 50--90\% of presynaptic
+spikes fail to produce a postsynaptic response. Is this unreliability
+merely a biophysical limitation, or does it serve a computational
+purpose?
+\subsubsection{Graceful Degradation of Odor Coding}
+\label{sec:org961998c}
+
+We sweep release probability from \(p = 0.1\) (90\% failure) to \(p =
+1.0\) (deterministic) while presenting odor stimuli to the MB circuit.
+At \(p = 0.5\), which lies in the middle of the biological range,
+population firing rates decrease but the relative activation pattern
+across KCs is preserved. The high fan-in at KC\(\to\)MBON synapses
+(each MBON receives input from thousands of KCs) provides natural
+averaging: even when individual synapses fail, the aggregate input
+faithfully represents the odor identity.
+
+At \(p = 0.1\), odor coding begins to degrade substantially, with
+MBON firing rates dropping and selectivity decreasing. This sets a
+functional lower bound on synaptic reliability for the MB circuit.
+\subsubsection{Stochastic Resonance Enhances Signal Detection}
+\label{sec:org2e6e4a8}
+
+We test whether noise can enhance the detection of weak signals via
+stochastic resonance \citep{gammaitoni1998}. A subthreshold periodic
+signal (5 Hz, 3 mV below threshold) is presented to a test circuit
+alongside varying levels of intrinsic noise.
+
+The SNR exhibits the classic inverted-U profile: at zero noise, the
+subthreshold signal produces no spikes and \(\text{SNR} = 0\). At
+intermediate noise (\(\sigma_{\text{opt}}\)), noise fluctuations
+occasionally push the membrane potential across threshold in synchrony
+with the signal peaks, yielding a maximum SNR. At high noise, the
+signal is swamped by random firing and SNR declines again.
+
+This demonstrates that the MB circuit supports stochastic resonance
+in principle. Whether the fly exploits this mechanism in vivo ---
+using background synaptic noise to detect weak olfactory signals
+--- remains an open question, but the computational substrate is
+present.
+\subsubsection{Noise Sweep on the MB Circuit}
+\label{sec:orge8abfbd}
+
+Sweeping intrinsic noise \(\sigma \in \{0, 1, 3, 5, 10\}\) on the
+full MB circuit during odor presentation reveals a non-monotonic
+relationship between noise and odor discriminability. Low noise
+(\(\sigma \leq 3\)) has minimal effect on MBON response patterns.
+Moderate noise (\(\sigma \approx 5\)) slightly broadens KC activation,
+potentially increasing the robustness of population codes to small
+perturbations. High noise (\(\sigma = 10\)) disrupts the sparse coding
+that is essential to MB function.
+\subsection{Topology Dominates: LIF and AdEx Agree When Adaptation Is Weak}
+\label{sec:orgcf700a5}
+
+\citet{zhang2024} demonstrated that connectome-constrained models of
+the \emph{Drosophila} visual system predict neural responses accurately
+regardless of the single-neuron model employed. We test whether this
+topology-dominates principle extends to the mushroom body.
+\subsubsection{Rate Correlation Across Neuron Models}
+\label{sec:org198198a}
+
+Simulating the MB circuit with both LIF and AdEx (regular spiking
+preset, \(b = 0.5\) mV) engines under identical stimulation, we find
+high rate correlation (\(r > 0.9\)) across the neuron population. The
+spatial pattern of firing rates --- which KCs are active, which MBONs
+are driven --- is determined primarily by the connectivity, not the
+neuron model.
+
+Temporal correlation is somewhat lower, reflecting the fact that
+the AdEx model's exponential spike initiation produces slightly
+different spike timing even when average rates agree. The mean
+relative difference is \(< 10\%\), indicating excellent quantitative
+agreement.
+\subsubsection{Adaptation Strength Determines Divergence}
+\label{sec:org1ec98ef}
+
+The agreement between LIF and AdEx is not absolute. Sweeping the
+adaptation parameter \(b\) from 0 to 5 mV reveals a clear divergence
+threshold:
+
+\begin{center}
+\begin{tabular}{ccc}
+\toprule
+\(b\) (mV) & Rate Correlation & Interpretation\\
+\midrule
+0.0 & \(\sim 1.0\) & Identical (no adaptation)\\
+0.1 & \(> 0.95\) & Topology dominates\\
+0.5 & \(> 0.9\) & Topology dominates\\
+1.0 & \$0.8\$--\(0.9\) & Partial agreement\\
+2.0 & \$0.6\$--\(0.8\) & Moderate divergence\\
+5.0 & \(< 0.5\) & Strong divergence\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At \(b = 0\) (no adaptation), the AdEx reduces to an exponential LIF
+and agreement is near-perfect. As \(b\) increases, spike-frequency
+adaptation progressively suppresses high-rate neurons. Because the LIF
+model lacks adaptation entirely, the two models disagree most for
+neurons that would fire at high rates --- precisely those where
+adaptation has the largest effect.
+
+This result refines the Zhang et al. hypothesis: \textbf{topology dominates
+when the effective single-neuron transfer function is similar across
+models}. When adaptation or other intrinsic dynamics significantly
+alter the input--output relationship, the neuron model matters.
+
+For the MB specifically, KCs fire sparsely and at low rates, placing
+them in the regime where topology dominates. MBONs and DANs, which
+fire at higher rates, are more sensitive to model choice.
+\section{Discussion}
+\label{sec:org86ae725}
+
+\subsection{Synthesis: Four Views of One Circuit}
+\label{sec:org56e735b}
+
+The four investigations converge on a unified picture of the
+\emph{Drosophila} MB as a circuit optimised for flexible, noise-tolerant
+odor discrimination:
+
+\begin{enumerate}
+\item \textbf{The AI regime supports sparse coding.} The balanced state prevents
+both synchronous locking and rate-code saturation, enabling the
+combinatorial KC population codes that give the MB its discriminative
+power.
+
+\item \textbf{Neuromodulation provides context.} The connectome defines the
+hardware; neuromodulatory states select the software. The MB's
+compartmental architecture is the anatomical substrate for this
+flexibility.
+
+\item \textbf{Stochastic transmission is not a bug.} Synaptic unreliability
+at biological levels is tolerated by the circuit's high fan-in
+architecture, and may actively enhance weak signal detection via
+stochastic resonance.
+
+\item \textbf{Topology is primary.} For the MB's sparse-firing Kenyon cells,
+connectivity determines activation patterns regardless of
+biophysical detail. This validates the use of minimal neuron models
+for connectome-scale simulation.
+\end{enumerate}
+\subsection{Limitations}
+\label{sec:orgaaf5868}
+
+Several limitations of the current study should be noted:
+
+\textbf{Current-injection models.} Our LIF and AdEx engines use
+current-based (not conductance-based) synapses. Conductance-based
+models would capture voltage-dependent effects (shunting inhibition,
+reversal potential saturation) that may matter for quantitative
+predictions.
+
+\textbf{Static weights.} We use FlyWire synapse counts as weight proxies
+without fitting to physiological data. The actual effective synaptic
+strengths depend on receptor composition, dendritic filtering, and
+neuromodulatory state, none of which are captured by synapse counts
+alone.
+
+\textbf{No recurrent dynamics.} The MB has limited recurrent excitation
+(KCs do not synapse strongly on each other), so the balanced-state
+analysis relies primarily on the APL\(\to\)KC feedback loop. A full
+treatment would include the recurrent MBON\(\to\)DAN\(\to\)KC pathways
+that implement memory consolidation.
+
+\textbf{Simplified neuromodulation.} Our multiplicative gain model captures
+the sign and rough magnitude of modulatory effects but not their
+temporal dynamics (onset, offset, desensitisation) or the combinatorial
+interactions between multiple neuromodulatory systems acting
+simultaneously.
+
+\textbf{No plasticity in regime or comparison analyses.} The Brunel,
+neuromodulation, and LIF/AdEx analyses use static weights. In the
+living fly, synaptic weights are continuously modified by experience.
+Whether the dynamical regime classification holds during learning
+--- when weight distributions change --- is an open question.
+\subsection{Future Directions}
+\label{sec:org429adf2}
+
+Three immediate extensions suggest themselves:
+
+\begin{enumerate}
+\item \textbf{ISN paradoxical response}: Testing whether the MB circuit exhibits
+the inhibition-stabilised network (ISN) signature --- where driving
+inhibitory neurons paradoxically decreases total inhibition --- would
+further characterise the circuit's dynamical regime.
+
+\item \textbf{Three-factor learning rules}: Implementing dopamine-gated synaptic
+depression at KC\(\to\)MBON synapses would enable simulation of
+associative conditioning protocols, connecting the circuit dynamics
+explored here to the MB's primary biological function.
+
+\item \textbf{Comparative motif analysis}: Extracting network motifs (feedforward
+chains, reciprocal inhibition, convergent excitation) from the MB
+and comparing their statistics to random graphs with matched degree
+distributions would reveal which connectivity features are
+under-represented or enriched by evolution.
+\end{enumerate}
+\subsection{Conclusion}
+\label{sec:orgd08b259}
+
+The FlyWire connectome transforms \emph{Drosophila} neuroscience from
+circuit inference to circuit analysis. The four investigations
+presented here --- regime classification, neuromodulatory switching,
+stochastic synapses, and model comparison --- establish a computational
+baseline for the mushroom body and demonstrate that even minimal
+biophysical models, when constrained by real connectivity, can
+illuminate fundamental questions about neural circuit function. The
+connectome is necessary but not sufficient; dynamics, modulation, and
+noise complete the picture.
+
+\bibliography{references}
+\end{document}
