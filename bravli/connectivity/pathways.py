@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from bravli.bench.dataset import evaluate_datasets
-from bravli.connectivity.edges import NT_COLUMNS, NT_NAMES, NT_SIGN
+from bravli.connectivity.neurotransmitters import NT_COLUMNS, NT_NAMES, NT_SIGN
 from bravli.utils import get_logger
 
 LOG = get_logger("connectivity.pathways")

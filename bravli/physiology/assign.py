@@ -17,7 +17,7 @@ LOG = get_logger("physiology.assign")
 
 
 @evaluate_datasets
-def assign_synapse_models(edges, mode="biophysical"):
+def assign_synapse_models(edges, mode="biophysical", synapse_db=None):
     """Assign synapse model parameters to each edge.
 
     Adds columns for sign, tau_rise, tau_decay, e_rev, g_peak,
@@ -36,6 +36,9 @@ def assign_synapse_models(edges, mode="biophysical"):
     pd.DataFrame
         Input with added physiology columns.
     """
+    if synapse_db is None:
+        synapse_db = SYNAPSE_DB
+
     if "dominant_nt" not in edges.columns:
         raise ValueError(
             "Edge list lacks 'dominant_nt' column. "
@@ -63,8 +66,8 @@ def assign_synapse_models(edges, mode="biophysical"):
     confidences = []
 
     for nt in result["dominant_nt"]:
-        if nt in SYNAPSE_DB:
-            model = SYNAPSE_DB[nt]
+        if nt in synapse_db:
+            model = synapse_db[nt]
             signs.append(model.sign)
             tau_rises.append(model.tau_rise)
             tau_decays.append(model.tau_decay)

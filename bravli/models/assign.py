@@ -1,7 +1,7 @@
-"""Assign cell electrical models to FlyWire neurons.
+"""Assign cell electrical models to neurons.
 
-Uses the annotation table's super_class and cell_class columns to
-resolve the best available cell model for each neuron.
+Uses annotation columns (e.g., super_class, cell_class) to resolve
+the best available cell model for each neuron from a model database.
 """
 
 import pandas as pd
@@ -14,7 +14,7 @@ LOG = get_logger("models.assign")
 
 
 @evaluate_datasets
-def assign_cell_models(annotations, mode="class_aware"):
+def assign_cell_models(annotations, mode="class_aware", model_db=None):
     """Assign cell model parameters to each neuron.
 
     Parameters
@@ -33,10 +33,13 @@ def assign_cell_models(annotations, mode="class_aware"):
         v_rest, v_thresh, v_reset, tau_m, t_ref, c_m, r_input,
         model_confidence.
     """
+    if model_db is None:
+        model_db = CELL_MODEL_DB
+
     result = annotations.copy()
 
     if mode == "uniform":
-        model = CELL_MODEL_DB.get("shiu_uniform")
+        model = model_db.get("shiu_uniform")
         result["model_name"] = model.name
         result["model_mode"] = model.mode
         result["v_rest"] = model.v_rest
@@ -68,10 +71,10 @@ def assign_cell_models(annotations, mode="class_aware"):
     for _, row in annotations.iterrows():
         cc = row.get("cell_class") if has_cell_class else None
         sc = row.get("super_class") if has_super_class else None
-        model = CELL_MODEL_DB.resolve(cell_class=cc, super_class=sc)
+        model = model_db.resolve(cell_class=cc, super_class=sc)
 
         if model is None:
-            model = CELL_MODEL_DB.get("default_spiking")
+            model = model_db.get("default_spiking")
 
         names.append(model.name)
         modes.append(model.mode)
