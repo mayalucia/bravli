@@ -41,6 +41,9 @@ output/*.html
 .auctex-auto/
 .test_results.json
 
+# Lab — local computational artefacts (regenerable from code)
+.lab/
+
 # OS
 .DS_Store
 Thumbs.db
